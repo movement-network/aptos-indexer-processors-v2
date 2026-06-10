@@ -27,12 +27,15 @@ where
     Self: Sized + Send + 'static,
 {
     conn_pool: ArcDbPool,
-    processor_config: DefaultProcessorConfig,
+    per_table_chunk_sizes: AHashMap<String, usize>,
 }
 
 impl ConfidentialAssetStorer {
     pub fn new(conn_pool: ArcDbPool, processor_config: DefaultProcessorConfig) -> Self {
-        Self { conn_pool, processor_config }
+        Self {
+            conn_pool,
+            per_table_chunk_sizes: processor_config.per_table_chunk_sizes,
+        }
     }
 }
 
@@ -46,16 +49,13 @@ impl Processable for ConfidentialAssetStorer {
         &mut self,
         events: TransactionContext<ConfidentialAssetEvents>,
     ) -> Result<Option<TransactionContext<()>>, ProcessorError> {
-        let per_table_chunk_sizes: AHashMap<String, usize> =
-            self.processor_config.per_table_chunk_sizes.clone();
-
         let activities_res = execute_in_chunks(
             self.conn_pool.clone(),
             insert_activities_query,
             &events.data.activities,
             get_config_table_chunk_size::<ConfidentialAssetActivity>(
                 "confidential_asset_activities",
-                &per_table_chunk_sizes,
+                &self.per_table_chunk_sizes,
             ),
         )
         .await;
@@ -77,7 +77,10 @@ impl Processable for ConfidentialAssetStorer {
             events.data.activities.len(),
         );
 
-        Ok(Some(TransactionContext { data: (), metadata: events.metadata }))
+        Ok(Some(TransactionContext {
+            data: (),
+            metadata: events.metadata,
+        }))
     }
 }
 
