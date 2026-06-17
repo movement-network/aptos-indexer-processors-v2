@@ -9,8 +9,6 @@ CREATE TABLE IF NOT EXISTS confidential_asset_activities (
     event_index           BIGINT        NOT NULL,
     -- Short event type: "Transferred", "Registered", "FreezeChanged", etc.
     event_type            VARCHAR(50)   NOT NULL,
-    -- Account address stored in the event key (the emitting object/account).
-    account_address       VARCHAR(66)   NOT NULL,
     -- Fungible-asset metadata object address; NULL for AllowListChanged.
     asset_type            VARCHAR(66),
     -- Sender / primary actor address; NULL for governance events.
@@ -25,7 +23,6 @@ CREATE TABLE IF NOT EXISTS confidential_asset_activities (
     PRIMARY KEY (transaction_version, event_index)
 );
 
-CREATE INDEX IF NOT EXISTS caa_account_idx ON confidential_asset_activities (account_address);
 CREATE INDEX IF NOT EXISTS caa_asset_idx   ON confidential_asset_activities (asset_type);
 CREATE INDEX IF NOT EXISTS caa_from_idx    ON confidential_asset_activities (from_address);
 CREATE INDEX IF NOT EXISTS caa_to_idx      ON confidential_asset_activities (to_address);

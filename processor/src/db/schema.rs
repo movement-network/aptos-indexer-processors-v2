@@ -401,8 +401,6 @@ diesel::table! {
         #[max_length = 50]
         event_type -> Varchar,
         #[max_length = 66]
-        account_address -> Varchar,
-        #[max_length = 66]
         asset_type -> Nullable<Varchar>,
         #[max_length = 66]
         from_address -> Nullable<Varchar>,

@@ -282,8 +282,6 @@ pub struct ConfidentialAssetActivity {
     pub event_index: i64,
     /// Short event variant name: "Transferred", "Registered", etc.
     pub event_type: String,
-    /// Account address from the event key (the emitting object/account).
-    pub account_address: String,
     /// Fungible-asset metadata object address; `None` for `AllowListChanged`.
     pub asset_type: Option<String>,
     /// Sender / primary actor address; `None` for governance events.
@@ -310,8 +308,7 @@ pub struct ParsedCaEvents {
 pub fn parse_ca_events(txn: &Transaction) -> ParsedCaEvents {
     let txn_version = txn.version as i64;
     let block_height = txn.block_height as i64;
-    let block_timestamp =
-        parse_timestamp(txn.timestamp.as_ref().unwrap(), txn_version).naive_utc();
+    let block_timestamp = parse_timestamp(txn.timestamp.as_ref().unwrap(), txn_version).naive_utc();
     let now = chrono::Utc::now().naive_utc();
 
     let raw_events: &Vec<Event> = match txn.txn_data.as_ref() {
@@ -334,22 +331,13 @@ pub fn parse_ca_events(txn: &Transaction) -> ParsedCaEvents {
             Err(e) => {
                 warn!(
                     transaction_version = txn_version,
-                    event_index,
-                    type_str,
-                    "Failed to parse CA event: {e:#}"
+                    event_index, type_str, "Failed to parse CA event: {e:#}"
                 );
                 continue;
             },
         };
 
         let short_type = short_event_type(type_str).to_string();
-        let account_address = standardize_address(
-            event
-                .key
-                .as_ref()
-                .map(|k| k.account_address.as_str())
-                .unwrap_or(""),
-        );
         let asset_type = ca_event.asset_type();
         let from_address = ca_event.from_address();
         let to_address = ca_event.to_address();
@@ -359,7 +347,6 @@ pub fn parse_ca_events(txn: &Transaction) -> ParsedCaEvents {
             transaction_version: txn_version,
             event_index,
             event_type: short_type,
-            account_address,
             asset_type,
             from_address,
             to_address,

@@ -12,7 +12,6 @@ pub struct ConfidentialAssetActivity {
     pub transaction_version: i64,
     pub event_index: i64,
     pub event_type: String,
-    pub account_address: String,
     pub asset_type: Option<String>,
     pub from_address: Option<String>,
     pub to_address: Option<String>,

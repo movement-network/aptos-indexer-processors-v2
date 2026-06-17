@@ -3,7 +3,6 @@
     "transaction_version": 4632,
     "event_index": 0,
     "event_type": "RolledOver",
-    "account_address": "0x0000000000000000000000000000000000000000000000000000000000000000",
     "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
     "from_address": "0x7dc4782d55e8493e70477f366bcbef85f3c48713d1db3fc2d50e99318ccb2b45",
     "to_address": null,

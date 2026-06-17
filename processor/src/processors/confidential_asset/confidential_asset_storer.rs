@@ -107,7 +107,6 @@ fn insert_activities_query(
         .do_update()
         .set((
             event_type.eq(excluded(event_type)),
-            account_address.eq(excluded(account_address)),
             asset_type.eq(excluded(asset_type)),
             from_address.eq(excluded(from_address)),
             to_address.eq(excluded(to_address)),
