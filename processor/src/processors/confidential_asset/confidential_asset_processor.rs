@@ -51,7 +51,10 @@ impl ConfidentialAssetProcessor {
                     )
                 })?;
 
-                Ok(Self { config, db_pool: conn_pool })
+                Ok(Self {
+                    config,
+                    db_pool: conn_pool,
+                })
             },
             _ => Err(anyhow::anyhow!(
                 "Invalid db config for ConfidentialAssetProcessor: {:?}",
@@ -131,8 +134,7 @@ impl ProcessorTrait for ConfidentialAssetProcessor {
                 Ok(txn_context) => {
                     debug!(
                         "ConfidentialAsset: finished versions [{:?}, {:?}]",
-                        txn_context.metadata.start_version,
-                        txn_context.metadata.end_version,
+                        txn_context.metadata.start_version, txn_context.metadata.end_version,
                     );
                 },
                 Err(e) => {

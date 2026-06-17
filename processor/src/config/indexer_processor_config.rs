@@ -19,10 +19,10 @@ use crate::{
     },
     processors::{
         account_restoration::account_restoration_processor::AccountRestorationProcessor,
-        confidential_asset::confidential_asset_processor::ConfidentialAssetProcessor,
         account_transactions::account_transactions_processor::AccountTransactionsProcessor,
-        ans::ans_processor::AnsProcessor, default::default_processor::DefaultProcessor,
-        events::events_processor::EventsProcessor,
+        ans::ans_processor::AnsProcessor,
+        confidential_asset::confidential_asset_processor::ConfidentialAssetProcessor,
+        default::default_processor::DefaultProcessor, events::events_processor::EventsProcessor,
         fungible_asset::fungible_asset_processor::FungibleAssetProcessor,
         gas_fees::gas_fee_processor::GasFeeProcessor,
         monitoring::monitoring_processor::MonitoringProcessor,
