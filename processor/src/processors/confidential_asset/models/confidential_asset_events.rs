@@ -15,7 +15,7 @@ use tracing::warn;
 
 /// Substring present in every event type emitted by the confidential_asset module.
 /// Matches both `0x7::confidential_asset::*` and `0x1::confidential_asset::*`.
-const CA_MODULE_MARKER: &str = "::confidential_asset::";
+const CA_MODULE_MARKER: &str = "0x1::confidential_asset::";
 
 // ---------------------------------------------------------------------------
 // Opaque crypto type aliases
@@ -159,13 +159,36 @@ pub struct TokenAllowChangedEvent {
     pub allowed: bool,
 }
 
-/// `confidential_asset::AuditorChanged`
+/// `confidential_asset::ChainAuditorChanged`
+/// Emitted when the chain-level auditor key is set, rotated, or cleared.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AuditorChangedEvent {
+pub struct ChainAuditorChangedEvent {
+    /// New chain auditor encryption key, or `None` (`{"vec":[]}`) when cleared.
+    pub new_chain_auditor_ek: serde_json::Value,
+    /// Monotonically increasing epoch. Serialized as a string by the Move runtime (u64 convention).
+    pub new_epoch: serde_json::Value,
+}
+
+/// `confidential_asset::ChainAuditorAdminChanged`
+/// Emitted when the chain-auditor admin is assigned or rotated by governance.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainAuditorAdminChangedEvent {
+    /// New chain-auditor admin address.
+    pub new_admin: String,
+}
+
+/// `confidential_asset::AssetAuditorChanged`
+/// Emitted when the per-asset auditor key is set, rotated, or cleared via `set_asset_auditor`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AssetAuditorChangedEvent {
     #[serde(skip_serializing)]
     pub asset_type: String,
-    /// New asset-specific auditor key, or `None` (as `{"vec":[]}`) when cleared.
-    pub new_auditor_ek: serde_json::Value,
+    /// New per-asset auditor encryption key, or `None` (`{"vec":[]}`) when cleared.
+    pub new_asset_auditor_ek: serde_json::Value,
+    /// Monotonically increasing epoch; stamped on each `Transferred` event so
+    /// off-chain readers can identify which key was in force at transfer time.
+    /// Serialized as a string by the Move runtime (u64 convention).
+    pub new_epoch: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +212,9 @@ pub enum CaEvent {
     FreezeChanged(FreezeChangedEvent),
     AllowListChanged(AllowListChangedEvent),
     TokenAllowChanged(TokenAllowChangedEvent),
-    AuditorChanged(AuditorChangedEvent),
+    AssetAuditorChanged(AssetAuditorChangedEvent),
+    ChainAuditorChanged(ChainAuditorChangedEvent),
+    ChainAuditorAdminChanged(ChainAuditorAdminChangedEvent),
 }
 
 impl CaEvent {
@@ -218,7 +243,15 @@ impl CaEvent {
             "TokenAllowChanged" => {
                 serde_json::from_str(data).map(|e| Some(Self::TokenAllowChanged(e)))
             },
-            "AuditorChanged" => serde_json::from_str(data).map(|e| Some(Self::AuditorChanged(e))),
+            "AssetAuditorChanged" => {
+                serde_json::from_str(data).map(|e| Some(Self::AssetAuditorChanged(e)))
+            },
+            "ChainAuditorChanged" => {
+                serde_json::from_str(data).map(|e| Some(Self::ChainAuditorChanged(e)))
+            },
+            "ChainAuditorAdminChanged" => {
+                serde_json::from_str(data).map(|e| Some(Self::ChainAuditorAdminChanged(e)))
+            },
             _ => return Ok(None),
         };
         result.context(format!(
@@ -238,8 +271,10 @@ impl CaEvent {
             Self::KeyRotated(e) => Some(standardize_address(&e.asset_type)),
             Self::FreezeChanged(e) => Some(standardize_address(&e.asset_type)),
             Self::TokenAllowChanged(e) => Some(standardize_address(&e.asset_type)),
-            Self::AuditorChanged(e) => Some(standardize_address(&e.asset_type)),
+            Self::AssetAuditorChanged(e) => Some(standardize_address(&e.asset_type)),
             Self::AllowListChanged(_) => None,
+            Self::ChainAuditorChanged(_) => None,
+            Self::ChainAuditorAdminChanged(_) => None,
         }
     }
 

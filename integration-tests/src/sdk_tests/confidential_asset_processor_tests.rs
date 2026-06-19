@@ -26,6 +26,16 @@ pub const CA_TXN_NORMALIZE: &[u8] =
     include_bytes!("test_transactions/confidential_asset/1006_ca_normalize.json");
 pub const CA_TXN_KEY_ROTATE: &[u8] =
     include_bytes!("test_transactions/confidential_asset/1007_ca_key_rotate.json");
+pub const CA_TXN_ASSET_AUDITOR_CHANGED: &[u8] =
+    include_bytes!("test_transactions/confidential_asset/1008_ca_asset_auditor_changed.json");
+pub const CA_TXN_TOKEN_ALLOW_CHANGED: &[u8] =
+    include_bytes!("test_transactions/confidential_asset/1009_ca_token_allow_changed.json");
+pub const CA_TXN_ALLOW_LIST_CHANGED: &[u8] =
+    include_bytes!("test_transactions/confidential_asset/1010_ca_allow_list_changed.json");
+pub const CA_TXN_CHAIN_AUDITOR_ADMIN_CHANGED: &[u8] =
+    include_bytes!("test_transactions/confidential_asset/1011_ca_chain_auditor_admin_changed.json");
+pub const CA_TXN_CHAIN_AUDITOR_CHANGED: &[u8] =
+    include_bytes!("test_transactions/confidential_asset/1012_ca_chain_auditor_changed.json");
 
 // ---------------------------------------------------------------------------
 // Processor config helper
@@ -70,8 +80,11 @@ pub fn setup_ca_processor_config(
 #[cfg(test)]
 mod sdk_confidential_asset_processor_tests {
     use super::{
-        setup_ca_processor_config, CA_TXN_DEPOSIT, CA_TXN_KEY_ROTATE, CA_TXN_NORMALIZE,
-        CA_TXN_REGISTER, CA_TXN_ROLLOVER, CA_TXN_TRANSFER, CA_TXN_WITHDRAW,
+        setup_ca_processor_config, CA_TXN_ALLOW_LIST_CHANGED, CA_TXN_ASSET_AUDITOR_CHANGED,
+        CA_TXN_CHAIN_AUDITOR_ADMIN_CHANGED, CA_TXN_CHAIN_AUDITOR_CHANGED, CA_TXN_DEPOSIT,
+        CA_TXN_KEY_ROTATE, CA_TXN_NORMALIZE,
+        CA_TXN_REGISTER, CA_TXN_ROLLOVER, CA_TXN_TOKEN_ALLOW_CHANGED, CA_TXN_TRANSFER,
+        CA_TXN_WITHDRAW,
     };
     use crate::{
         diff_test_helper::confidential_asset_processor::load_data,
@@ -117,6 +130,51 @@ mod sdk_confidential_asset_processor_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_ca_key_rotate() {
         process_single_ca_txn(CA_TXN_KEY_ROTATE, Some("ca_key_rotate".to_string())).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ca_asset_auditor_changed() {
+        process_single_ca_txn(
+            CA_TXN_ASSET_AUDITOR_CHANGED,
+            Some("ca_asset_auditor_changed".to_string()),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ca_token_allow_changed() {
+        process_single_ca_txn(
+            CA_TXN_TOKEN_ALLOW_CHANGED,
+            Some("ca_token_allow_changed".to_string()),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ca_allow_list_changed() {
+        process_single_ca_txn(
+            CA_TXN_ALLOW_LIST_CHANGED,
+            Some("ca_allow_list_changed".to_string()),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ca_chain_auditor_changed() {
+        process_single_ca_txn(
+            CA_TXN_CHAIN_AUDITOR_CHANGED,
+            Some("ca_chain_auditor_changed".to_string()),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_ca_chain_auditor_admin_changed() {
+        process_single_ca_txn(
+            CA_TXN_CHAIN_AUDITOR_ADMIN_CHANGED,
+            Some("ca_chain_auditor_admin_changed".to_string()),
+        )
+        .await;
     }
 
     // -----------------------------------------------------------------------
