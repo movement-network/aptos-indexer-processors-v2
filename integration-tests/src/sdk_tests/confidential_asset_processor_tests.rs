@@ -82,9 +82,8 @@ mod sdk_confidential_asset_processor_tests {
     use super::{
         setup_ca_processor_config, CA_TXN_ALLOW_LIST_CHANGED, CA_TXN_ASSET_AUDITOR_CHANGED,
         CA_TXN_CHAIN_AUDITOR_ADMIN_CHANGED, CA_TXN_CHAIN_AUDITOR_CHANGED, CA_TXN_DEPOSIT,
-        CA_TXN_KEY_ROTATE, CA_TXN_NORMALIZE,
-        CA_TXN_REGISTER, CA_TXN_ROLLOVER, CA_TXN_TOKEN_ALLOW_CHANGED, CA_TXN_TRANSFER,
-        CA_TXN_WITHDRAW,
+        CA_TXN_KEY_ROTATE, CA_TXN_NORMALIZE, CA_TXN_REGISTER, CA_TXN_ROLLOVER,
+        CA_TXN_TOKEN_ALLOW_CHANGED, CA_TXN_TRANSFER, CA_TXN_WITHDRAW,
     };
     use crate::{
         diff_test_helper::confidential_asset_processor::load_data,
