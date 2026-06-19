@@ -39,7 +39,7 @@
           "arguments": [
             "true"
           ],
-          "entryFunctionIdStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::set_allow_list"
+          "entryFunctionIdStr": "0x1::confidential_asset::set_allow_list"
         },
         "extraConfigV1": {}
       },
@@ -65,7 +65,7 @@
           }
         },
         "data": "{\"enabled\":true}",
-        "typeStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::AllowListChanged"
+        "typeStr": "0x1::confidential_asset::AllowListChanged"
       },
       {
         "key": {

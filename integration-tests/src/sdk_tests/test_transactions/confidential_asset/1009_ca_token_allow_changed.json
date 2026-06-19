@@ -40,7 +40,7 @@
             "{\"inner\":\"0xa\"}",
             "true"
           ],
-          "entryFunctionIdStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::set_token_allow"
+          "entryFunctionIdStr": "0x1::confidential_asset::set_token_allow"
         },
         "extraConfigV1": {}
       },
@@ -66,7 +66,7 @@
           }
         },
         "data": "{\"allowed\":true,\"asset_type\":\"0xa\"}",
-        "typeStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::TokenAllowChanged"
+        "typeStr": "0x1::confidential_asset::TokenAllowChanged"
       },
       {
         "key": {

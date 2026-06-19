@@ -39,7 +39,7 @@
           "arguments": [
             "\"0x7ea6e108a22cf9e8112085c8d3b8bdc73d2fd8317309040135cdc4ef4970b12a\""
           ],
-          "entryFunctionIdStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::set_chain_auditor"
+          "entryFunctionIdStr": "0x1::confidential_asset::set_chain_auditor"
         },
         "extraConfigV1": {}
       },
@@ -65,7 +65,7 @@
           }
         },
         "data": "{\"new_chain_auditor_ek\":{\"vec\":[{\"point\":{\"data\":\"0x7ea6e108a22cf9e8112085c8d3b8bdc73d2fd8317309040135cdc4ef4970b12a\"}}]},\"new_epoch\":\"1\"}",
-        "typeStr": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91::confidential_asset::ChainAuditorChanged"
+        "typeStr": "0x1::confidential_asset::ChainAuditorChanged"
       },
       {
         "key": {
