@@ -1,0 +1,160 @@
+[
+  {
+    "transaction_version": 4917,
+    "event_index": 0,
+    "event_type": "Transferred",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": "0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954",
+    "to_address": "0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954",
+    "event_data": {
+      "data": {
+        "memo": "0x",
+        "amount": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4f"
+              },
+              "right": {
+                "data": "0xd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca50"
+              }
+            },
+            {
+              "left": {
+                "data": "0x5ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf624"
+              },
+              "right": {
+                "data": "0x90dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12"
+              }
+            },
+            {
+              "left": {
+                "data": "0x464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a18"
+              },
+              "right": {
+                "data": "0x14291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648"
+              }
+            },
+            {
+              "left": {
+                "data": "0x061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e77"
+              },
+              "right": {
+                "data": "0x7c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208"
+              }
+            }
+          ]
+        },
+        "ek_volun_auds": "0x",
+        "sender_auditor_hint": "0x",
+        "new_recip_pending_balance": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4f"
+              },
+              "right": {
+                "data": "0xd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca50"
+              }
+            },
+            {
+              "left": {
+                "data": "0x5ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf624"
+              },
+              "right": {
+                "data": "0x90dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12"
+              }
+            },
+            {
+              "left": {
+                "data": "0x464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a18"
+              },
+              "right": {
+                "data": "0x14291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648"
+              }
+            },
+            {
+              "left": {
+                "data": "0x061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e77"
+              },
+              "right": {
+                "data": "0x7c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208"
+              }
+            }
+          ]
+        },
+        "new_sender_available_balance": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0xb27ce0857bf821841eacba87617d7168faf3949613727f0f658bf7024b129a7d"
+              },
+              "right": {
+                "data": "0xa07d34405842876a94e44ee060518df2969a64037f58afd1889524914e40a21b"
+              }
+            },
+            {
+              "left": {
+                "data": "0x60eec74a6958f5845b55d83b149e84353b46be08ec6e45523548ff8647dae540"
+              },
+              "right": {
+                "data": "0x68d72b582ec7134c6221c4244c32a4fa627a9f8231678c99c0c7d2adc38b4308"
+              }
+            },
+            {
+              "left": {
+                "data": "0x0087c488322548f53203076a304c7dbec8021b9232f3cd1e04fa2bedcae79e37"
+              },
+              "right": {
+                "data": "0xb8f7b1d57ee8c6a3bd536b3bb30eb752a41812bf4248af5376f7ce843724dc69"
+              }
+            },
+            {
+              "left": {
+                "data": "0xf04a18dd9cb22742164b51656227a8b7256d8d1fa31d81995f9a88b3702d4f67"
+              },
+              "right": {
+                "data": "0x92d5fc1bb038e044d6f011f0b3a5946ff35802de94e160aff20fab7fb3630343"
+              }
+            },
+            {
+              "left": {
+                "data": "0x66f3d9547d729f3b352eb4a0c4f2847210c474d7dd47953cbce4616f2da6844d"
+              },
+              "right": {
+                "data": "0xf285787ca748c1d00f8e3e46b46ea5a8037197e35f41c12553788ec2f4c4dd57"
+              }
+            },
+            {
+              "left": {
+                "data": "0xb84196c66229b5e5b4a3a1b085bd128b569e13f7b975f97f458984bdd61f063d"
+              },
+              "right": {
+                "data": "0xa80d8940ce677379b12e1fc70373baded34a18fc383a856dc7f65da11d499e66"
+              }
+            },
+            {
+              "left": {
+                "data": "0x6ed1004acbde6b59f702892dde2e08bdf4b21e39315c3faebac3eab33c1ab26a"
+              },
+              "right": {
+                "data": "0x5633f629d24a56994311f4d7ad7e4c50b7f57a21235525b6fa1a566c0946f067"
+              }
+            },
+            {
+              "left": {
+                "data": "0x6616db4046c8a3050cd4fe68633491e10eed574a48c783f76f379ea57b9ee059"
+              },
+              "right": {
+                "data": "0xa869cdff01aa527a2c965f8e447544c4a3e2f87b852222872e941f3395f6c152"
+              }
+            }
+          ]
+        }
+      },
+      "type": "Transferred"
+    },
+    "block_height": 2426,
+    "transaction_timestamp": "2026-04-27T08:35:35.779028"
+  }
+]

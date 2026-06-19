@@ -1,0 +1,21 @@
+[
+  {
+    "transaction_version": 160216,
+    "event_index": 0,
+    "event_type": "ChainAuditorChanged",
+    "asset_type": null,
+    "from_address": null,
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "new_chain_auditor_ek": {
+          "vec": []
+        },
+        "new_epoch": "3"
+      },
+      "type": "ChainAuditorChanged"
+    },
+    "block_height": 80029,
+    "transaction_timestamp": "2026-06-18T14:50:02.180613"
+  }
+]

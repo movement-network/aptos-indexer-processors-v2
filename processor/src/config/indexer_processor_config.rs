@@ -20,8 +20,9 @@ use crate::{
     processors::{
         account_restoration::account_restoration_processor::AccountRestorationProcessor,
         account_transactions::account_transactions_processor::AccountTransactionsProcessor,
-        ans::ans_processor::AnsProcessor, default::default_processor::DefaultProcessor,
-        events::events_processor::EventsProcessor,
+        ans::ans_processor::AnsProcessor,
+        confidential_asset::confidential_asset_processor::ConfidentialAssetProcessor,
+        default::default_processor::DefaultProcessor, events::events_processor::EventsProcessor,
         fungible_asset::fungible_asset_processor::FungibleAssetProcessor,
         gas_fees::gas_fee_processor::GasFeeProcessor,
         monitoring::monitoring_processor::MonitoringProcessor,
@@ -53,6 +54,10 @@ pub struct IndexerProcessorConfig {
 impl RunnableConfig for IndexerProcessorConfig {
     async fn run(&self) -> Result<()> {
         match self.processor_config {
+            ProcessorConfig::ConfidentialAssetProcessor(_) => {
+                let ca_processor = ConfidentialAssetProcessor::new(self.clone()).await?;
+                ca_processor.run_processor().await
+            },
             ProcessorConfig::AccountTransactionsProcessor(_) => {
                 let acc_txns_processor = AccountTransactionsProcessor::new(self.clone()).await?;
                 acc_txns_processor.run_processor().await

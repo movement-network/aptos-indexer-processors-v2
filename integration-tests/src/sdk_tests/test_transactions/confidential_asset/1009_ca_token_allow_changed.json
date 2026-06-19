@@ -1,0 +1,102 @@
+{
+  "timestamp": {
+    "seconds": "1777291000",
+    "nanos": 0
+  },
+  "version": "5200",
+  "info": {
+    "hash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "stateChangeHash": "THaV7xs4IG1lsoTwbzMQjLSaCSmIa73hgUro14pArUU=",
+    "eventRootHash": "RVZYHDiyxre2dPNHKA7AH9g6S9GYzdrVSRmbIkbsNhw=",
+    "gasUsed": "120",
+    "success": true,
+    "vmStatus": "Executed successfully",
+    "accumulatorRootHash": "55Ll7eJAmGbjowXCu2fY9JXn5XjAzaJbjjzc7JUds5M=",
+    "changes": []
+  },
+  "epoch": "101",
+  "blockHeight": "2600",
+  "type": "TRANSACTION_TYPE_USER",
+  "user": {
+    "request": {
+      "sender": "0x736f3af18eb712d517f36f103ae156979076e0eab11335b43d1c98a7a855348d",
+      "sequenceNumber": "7",
+      "maxGasAmount": "2000000",
+      "gasUnitPrice": "100",
+      "expirationTimestampSecs": {
+        "seconds": "1777291600"
+      },
+      "payload": {
+        "type": "TYPE_ENTRY_FUNCTION_PAYLOAD",
+        "entryFunctionPayload": {
+          "function": {
+            "module": {
+              "address": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91",
+              "name": "confidential_asset"
+            },
+            "name": "set_token_allow"
+          },
+          "arguments": [
+            "{\"inner\":\"0xa\"}",
+            "true"
+          ],
+          "entryFunctionIdStr": "0x1::confidential_asset::set_token_allow"
+        },
+        "extraConfigV1": {}
+      },
+      "signature": {
+        "type": "TYPE_ED25519",
+        "ed25519": {
+          "publicKey": "q2Y9uJeid7CReOQIeFv8jid70tF3V6b4Vtmo+cMery4=",
+          "signature": "GSN4j9+lxOs7BTqfNXdVSROqxzDOCNebX8fZMoxlL+RkDDVKNYylLON9pxg5vfRCjD9+YmY1f3TxQAHOtPLlBQ=="
+        }
+      }
+    },
+    "events": [
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91",
+            "module": "confidential_asset",
+            "name": "TokenAllowChanged"
+          }
+        },
+        "data": "{\"allowed\":true,\"asset_type\":\"0xa\"}",
+        "typeStr": "0x1::confidential_asset::TokenAllowChanged"
+      },
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x1",
+            "module": "transaction_fee",
+            "name": "FeeStatement"
+          }
+        },
+        "data": "{\"execution_gas_units\":\"117\",\"io_gas_units\":\"4\",\"storage_fee_octas\":\"0\",\"storage_fee_refund_octas\":\"0\",\"total_charge_gas_units\":\"120\"}",
+        "typeStr": "0x1::transaction_fee::FeeStatement"
+      }
+    ]
+  },
+  "sizeInfo": {
+    "transactionBytes": 400,
+    "eventSizeInfo": [
+      {
+        "typeTagBytes": 72,
+        "totalBytes": 80
+      },
+      {
+        "typeTagBytes": 63,
+        "totalBytes": 103
+      }
+    ],
+    "writeOpSizeInfo": []
+  }
+}

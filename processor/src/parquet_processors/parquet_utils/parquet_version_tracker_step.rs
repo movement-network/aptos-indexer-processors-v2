@@ -94,7 +94,7 @@ where
                     return Err(ProcessorError::ProcessError {
                         message: format!(
                             "Gap detected for {:?} starting from version: {}",
-                            &parquet_type.to_string(),
+                            parquet_type.to_string(),
                             current_metadata.start_version
                         ),
                     });

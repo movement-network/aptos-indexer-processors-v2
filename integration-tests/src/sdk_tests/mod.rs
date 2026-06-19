@@ -5,6 +5,8 @@ pub mod account_transaction_processor_tests;
 #[cfg(test)]
 pub mod ans_processor_tests;
 #[cfg(test)]
+pub mod confidential_asset_processor_tests;
+#[cfg(test)]
 pub mod default_processor_tests;
 #[cfg(test)]
 pub mod events_processor_tests;

@@ -1,0 +1,85 @@
+[
+  {
+    "transaction_version": 4637,
+    "event_index": 0,
+    "event_type": "Normalized",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": "0x7dc4782d55e8493e70477f366bcbef85f3c48713d1db3fc2d50e99318ccb2b45",
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "new_available_balance": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0xa4d8625a5f118d204e5ccc662920e2d012e8c3a4d5ef96b3059dec4f7f681172"
+              },
+              "right": {
+                "data": "0x5aa8655e95e7379952253b9ea349edc96f579261b3bb940d4444c6e34b8dd77b"
+              }
+            },
+            {
+              "left": {
+                "data": "0x10632171d1d0b2af37e553384af6f68fa7e64bf83a38f4a55f8a4aace3f73c69"
+              },
+              "right": {
+                "data": "0x28671d90dcef7747783444a94d1e2e5db74d39af701524706489ae6ea83f075d"
+              }
+            },
+            {
+              "left": {
+                "data": "0xdcd04e5fafa52c8ebaf692f3324de913e0e48acd8e8525a70bd63d67c0619377"
+              },
+              "right": {
+                "data": "0x0e0d53a6ba74985a5f277314513948f32ecf2a68297bd9860c0b26b60a164301"
+              }
+            },
+            {
+              "left": {
+                "data": "0xda31f760f1b8f33c0694d6507fecaeab8fdee3f380bae7e3d7fd46e4b0160520"
+              },
+              "right": {
+                "data": "0xe4bdd3cc1aad12b7e66a967e3ef9f6ffd446d2e1d707d2b94b158ac61c0a2974"
+              }
+            },
+            {
+              "left": {
+                "data": "0x767a598977b1cb71b2e929caae9b7af0987b8bc190ba7d270a2e63ca97375800"
+              },
+              "right": {
+                "data": "0xba183855cf3528e7b106e83f9c767676da314af8fcef226ccc5cb127b59e0b5f"
+              }
+            },
+            {
+              "left": {
+                "data": "0x78e6d39fbca69eb39a37a9a0f37407a89087c4c54c866b0c59ec1991e259fc1a"
+              },
+              "right": {
+                "data": "0x289653f502235d2997e5e9610e0acb297ac6dd68968a650b5a98047b308bab7f"
+              }
+            },
+            {
+              "left": {
+                "data": "0x8e38351981e4c073a43c33f9ba31342851ec4da18869079adc40d6f59a721877"
+              },
+              "right": {
+                "data": "0x5e9ef79bafaf24f3cedd74e5b254aa104bd6263ec2f77ec1a435e499b876e911"
+              }
+            },
+            {
+              "left": {
+                "data": "0x36bd96c788123729a59e4eae4c462bdf31b89ac82f4caf788a6ef5364a661e3f"
+              },
+              "right": {
+                "data": "0x749ed067061ef768a17275730e896f8dad33c99003cad66dd4c1ccaf0ac7691d"
+              }
+            }
+          ]
+        }
+      },
+      "type": "Normalized"
+    },
+    "block_height": 2314,
+    "transaction_timestamp": "2026-04-27T08:35:09.886903"
+  }
+]

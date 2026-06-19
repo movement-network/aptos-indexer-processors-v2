@@ -101,6 +101,7 @@ use std::collections::HashSet;
 )]
 pub enum ProcessorConfig {
     AccountRestorationProcessor(DefaultProcessorConfig),
+    ConfidentialAssetProcessor(DefaultProcessorConfig),
     AccountTransactionsProcessor(DefaultProcessorConfig),
     AnsProcessor(AnsProcessorConfig),
     DefaultProcessor(DefaultProcessorConfig),

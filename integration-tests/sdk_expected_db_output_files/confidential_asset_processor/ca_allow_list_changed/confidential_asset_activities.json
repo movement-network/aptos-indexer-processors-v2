@@ -1,0 +1,18 @@
+[
+  {
+    "transaction_version": 5300,
+    "event_index": 0,
+    "event_type": "AllowListChanged",
+    "asset_type": null,
+    "from_address": null,
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "enabled": true
+      },
+      "type": "AllowListChanged"
+    },
+    "block_height": 2650,
+    "transaction_timestamp": "2026-04-27T12:13:20"
+  }
+]

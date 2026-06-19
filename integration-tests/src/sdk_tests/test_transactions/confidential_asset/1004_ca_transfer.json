@@ -1,0 +1,251 @@
+{
+  "timestamp": {
+    "seconds": "1777278935",
+    "nanos": 779028000
+  },
+  "version": "4917",
+  "info": {
+    "hash": "ebiqykciWF38MLJ3gJULVV4mrpDq6l1uns6QlyHYWHI=",
+    "stateChangeHash": "5C+t30c/Y5PRLDHTaICHZ2gvVlG1h1qxNTeVPEcc94A=",
+    "eventRootHash": "p6PZvlef196WEH/KxAOjMrqGrnTAk+Tt1SrMTuiM5T0=",
+    "gasUsed": "349",
+    "success": true,
+    "vmStatus": "Executed successfully",
+    "accumulatorRootHash": "kebjRnJX2i51D4EhRCRxbiUobEPCp/EI6lEU77/hakE=",
+    "changes": [
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0x468a87e4c9c15d6f2056d5d8e61e6dcf3c69cd90f7ce5fef2dcd0962731fbef",
+          "stateKeyHash": "ntcQ+x6oNASdz0PQsgZacU+/zp5KmyyHGwjIpuBCqg8=",
+          "type": {
+            "address": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91",
+            "module": "confidential_asset",
+            "name": "ConfidentialAssetStore"
+          },
+          "typeStr": "0x1::confidential_asset::ConfidentialAssetStore",
+          "data": "{\"actual_balance\":{\"chunks\":[{\"left\":{\"data\":\"0xb27ce0857bf821841eacba87617d7168faf3949613727f0f658bf7024b129a7d\"},\"right\":{\"data\":\"0xa07d34405842876a94e44ee060518df2969a64037f58afd1889524914e40a21b\"}},{\"left\":{\"data\":\"0x60eec74a6958f5845b55d83b149e84353b46be08ec6e45523548ff8647dae540\"},\"right\":{\"data\":\"0x68d72b582ec7134c6221c4244c32a4fa627a9f8231678c99c0c7d2adc38b4308\"}},{\"left\":{\"data\":\"0x0087c488322548f53203076a304c7dbec8021b9232f3cd1e04fa2bedcae79e37\"},\"right\":{\"data\":\"0xb8f7b1d57ee8c6a3bd536b3bb30eb752a41812bf4248af5376f7ce843724dc69\"}},{\"left\":{\"data\":\"0xf04a18dd9cb22742164b51656227a8b7256d8d1fa31d81995f9a88b3702d4f67\"},\"right\":{\"data\":\"0x92d5fc1bb038e044d6f011f0b3a5946ff35802de94e160aff20fab7fb3630343\"}},{\"left\":{\"data\":\"0x66f3d9547d729f3b352eb4a0c4f2847210c474d7dd47953cbce4616f2da6844d\"},\"right\":{\"data\":\"0xf285787ca748c1d00f8e3e46b46ea5a8037197e35f41c12553788ec2f4c4dd57\"}},{\"left\":{\"data\":\"0xb84196c66229b5e5b4a3a1b085bd128b569e13f7b975f97f458984bdd61f063d\"},\"right\":{\"data\":\"0xa80d8940ce677379b12e1fc70373baded34a18fc383a856dc7f65da11d499e66\"}},{\"left\":{\"data\":\"0x6ed1004acbde6b59f702892dde2e08bdf4b21e39315c3faebac3eab33c1ab26a\"},\"right\":{\"data\":\"0x5633f629d24a56994311f4d7ad7e4c50b7f57a21235525b6fa1a566c0946f067\"}},{\"left\":{\"data\":\"0x6616db4046c8a3050cd4fe68633491e10eed574a48c783f76f379ea57b9ee059\"},\"right\":{\"data\":\"0xa869cdff01aa527a2c965f8e447544c4a3e2f87b852222872e941f3395f6c152\"}}]},\"ek\":{\"point\":{\"data\":\"0x78f1892b4d32ea28dd8458ac01435184afbc4d1d04aafe22d11c60b43412997a\"}},\"frozen\":false,\"normalized\":true,\"pending_balance\":{\"chunks\":[{\"left\":{\"data\":\"0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4f\"},\"right\":{\"data\":\"0xd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca50\"}},{\"left\":{\"data\":\"0x5ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf624\"},\"right\":{\"data\":\"0x90dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12\"}},{\"left\":{\"data\":\"0x464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a18\"},\"right\":{\"data\":\"0x14291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648\"}},{\"left\":{\"data\":\"0x061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e77\"},\"right\":{\"data\":\"0x7c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208\"}}]},\"pending_counter\":\"1\"}"
+        }
+      },
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0x975b461453e8c36ba66937eaf7f874f7d6a9b26d65e89389304bd1bfee94809",
+          "stateKeyHash": "YkfiqPytQ9m572TUKyYQQ/LW/a5OVjCgYLBLlKDli2E=",
+          "type": {
+            "address": "0x1",
+            "module": "fungible_asset",
+            "name": "FungibleStore"
+          },
+          "typeStr": "0x1::fungible_asset::FungibleStore",
+          "data": "{\"balance\":\"6393300\",\"frozen\":false,\"metadata\":{\"inner\":\"0xa\"}}"
+        }
+      },
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0x975b461453e8c36ba66937eaf7f874f7d6a9b26d65e89389304bd1bfee94809",
+          "stateKeyHash": "YkfiqPytQ9m572TUKyYQQ/LW/a5OVjCgYLBLlKDli2E=",
+          "type": {
+            "address": "0x1",
+            "module": "object",
+            "name": "ObjectCore"
+          },
+          "typeStr": "0x1::object::ObjectCore",
+          "data": "{\"allow_ungated_transfer\":false,\"guid_creation_num\":\"1125899906842625\",\"owner\":\"0x9bb809cb154a393546da38ff08bc927679e77ecdb59dab49029315b54644e40e\",\"transfer_events\":{\"counter\":\"0\",\"guid\":{\"id\":{\"addr\":\"0x975b461453e8c36ba66937eaf7f874f7d6a9b26d65e89389304bd1bfee94809\",\"creation_num\":\"1125899906842624\"}}}}"
+        }
+      },
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954",
+          "stateKeyHash": "l6he+O1/It1djM6hLJMIS8ZnLY1ADDyjduT84Gapdg0=",
+          "type": {
+            "address": "0x1",
+            "module": "account",
+            "name": "Account"
+          },
+          "typeStr": "0x1::account::Account",
+          "data": "{\"authentication_key\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\",\"coin_register_events\":{\"counter\":\"0\",\"guid\":{\"id\":{\"addr\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\",\"creation_num\":\"0\"}}},\"guid_creation_num\":\"2\",\"key_rotation_events\":{\"counter\":\"0\",\"guid\":{\"id\":{\"addr\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\",\"creation_num\":\"1\"}}},\"rotation_capability_offer\":{\"for\":{\"vec\":[]}},\"sequence_number\":\"5\",\"signer_capability_offer\":{\"for\":{\"vec\":[]}}}"
+        }
+      },
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0xf72f31f90d89676e049051c4277171375df66ec7dbcf8f539c75d733b3aa26e9",
+          "stateKeyHash": "LNwjaiK/riA/GOsplMwe/tdveAGmZVWXtN6G9zpDdyk=",
+          "type": {
+            "address": "0x1",
+            "module": "fungible_asset",
+            "name": "FungibleStore"
+          },
+          "typeStr": "0x1::fungible_asset::FungibleStore",
+          "data": "{\"balance\":\"999783595\",\"frozen\":false,\"metadata\":{\"inner\":\"0xa\"}}"
+        }
+      },
+      {
+        "type": "TYPE_WRITE_RESOURCE",
+        "writeResource": {
+          "address": "0xf72f31f90d89676e049051c4277171375df66ec7dbcf8f539c75d733b3aa26e9",
+          "stateKeyHash": "LNwjaiK/riA/GOsplMwe/tdveAGmZVWXtN6G9zpDdyk=",
+          "type": {
+            "address": "0x1",
+            "module": "object",
+            "name": "ObjectCore"
+          },
+          "typeStr": "0x1::object::ObjectCore",
+          "data": "{\"allow_ungated_transfer\":false,\"guid_creation_num\":\"1125899906842625\",\"owner\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\",\"transfer_events\":{\"counter\":\"0\",\"guid\":{\"id\":{\"addr\":\"0xf72f31f90d89676e049051c4277171375df66ec7dbcf8f539c75d733b3aa26e9\",\"creation_num\":\"1125899906842624\"}}}}"
+        }
+      }
+    ]
+  },
+  "epoch": "90",
+  "blockHeight": "2426",
+  "type": "TRANSACTION_TYPE_USER",
+  "user": {
+    "request": {
+      "sender": "0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954",
+      "sequenceNumber": "4",
+      "maxGasAmount": "2000000",
+      "gasUnitPrice": "100",
+      "expirationTimestampSecs": {
+        "seconds": "1777279536"
+      },
+      "payload": {
+        "type": "TYPE_ENTRY_FUNCTION_PAYLOAD",
+        "entryFunctionPayload": {
+          "function": {
+            "module": {
+              "address": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91",
+              "name": "confidential_asset"
+            },
+            "name": "confidential_transfer"
+          },
+          "arguments": [
+            "{\"inner\":\"0xa\"}",
+            "\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\"",
+            "\"0xb27ce0857bf821841eacba87617d7168faf3949613727f0f658bf7024b129a7da07d34405842876a94e44ee060518df2969a64037f58afd1889524914e40a21b60eec74a6958f5845b55d83b149e84353b46be08ec6e45523548ff8647dae54068d72b582ec7134c6221c4244c32a4fa627a9f8231678c99c0c7d2adc38b43080087c488322548f53203076a304c7dbec8021b9232f3cd1e04fa2bedcae79e37b8f7b1d57ee8c6a3bd536b3bb30eb752a41812bf4248af5376f7ce843724dc69f04a18dd9cb22742164b51656227a8b7256d8d1fa31d81995f9a88b3702d4f6792d5fc1bb038e044d6f011f0b3a5946ff35802de94e160aff20fab7fb363034366f3d9547d729f3b352eb4a0c4f2847210c474d7dd47953cbce4616f2da6844df285787ca748c1d00f8e3e46b46ea5a8037197e35f41c12553788ec2f4c4dd57b84196c66229b5e5b4a3a1b085bd128b569e13f7b975f97f458984bdd61f063da80d8940ce677379b12e1fc70373baded34a18fc383a856dc7f65da11d499e666ed1004acbde6b59f702892dde2e08bdf4b21e39315c3faebac3eab33c1ab26a5633f629d24a56994311f4d7ad7e4c50b7f57a21235525b6fa1a566c0946f0676616db4046c8a3050cd4fe68633491e10eed574a48c783f76f379ea57b9ee059a869cdff01aa527a2c965f8e447544c4a3e2f87b852222872e941f3395f6c152\"",
+            "\"0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4fd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca505ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf62490dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a1814291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e777c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208\"",
+            "\"0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4fd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca505ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf62490dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a1814291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e777c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208\"",
+            "\"0x\"",
+            "\"0x\"",
+            "\"0x4ccdee05c707c3139208fe915396cb34813fc96725de1feb625f9c7c434cb473b01c2bf96b1bceee67ec91b9d01b357c25ff28ef5b31b99e439e45bcc7aae74dc2948c3be99fe4de62acac876a483f7f7975bd9751fe3702d4b8c8c1c8094f0bdeb75e3cca9e87a90b893b12723794ceee752da998217b3977629f1c5fdd313a44be305f1d142ec5cfcac08d4d43d4f3de62b147179a3591cc7f74bfc743ed066006e3e89674a72f65574fb77daa69e04896e03a0ffe1608c978f2a9bfa7f103d51b4a92c8a648e80eead62d6964f3411cbbe3a49271e0fb53d04e35b514b508061fe9b978272102546c167bd1f0d22bbe44e46b393420fcbc2c85482f24a31cd21161121b7892130f79293811b688315251801e243a2abcbb23a220f24c883574c207af7eff5942cad69509d60c7a7b7c4a6897f095cd51ab561f7b61b7597a2a062d70be54d947c9938dc0d499030e61206d4060fda65ffabf7e0a7a15c528207e242cf30f7cf93dd4b668981c7f26523049da64c516afbf4a3f667b8e0a2628e8aa59dc947f649820498d3afd77d5b871a44b0ee539888372258960cd285d08f89609c2eebeb550f09fa2f4a847010f6687bb5b6d7957de0220e396b8372fae7c25122f96b62afaee24907d80121b71233520bb604f93366d2d4cb9d47d6b10cd15a8c2fad900255fc90ef24cd2703b23a2053a448c8b3206018cf0b4f0342e57030d96c943623605119f250d8d4789c21e75cebf14f077760cd025005d6d94224161493b4ac6f38091a555c2af440dfc51d005179024dc95aa2379f147598e561b029b403e507ebc06d7878dbf21f7a02e509d19be31e07152fcc9de411e22e101c4f0060ee7e80e92b3986422e79d5bae7426daf620d3c174eae3378d20ea0d74c0c7eee9e102d18fb2bc3c47d69ef724ee7d47c8eadb64034ce495ef1215139699e83b91230efdc4a0e5ee970c0f71b1a214f740321a5aa2f049cacd0c168032bb3f6d85670c666d6c2c52136fbe182cc5b00bd676f5c5a6c6950ac005\"",
+            "\"0xfee5048b3f589b8a749ac0ee356a239f0ee9979c952e3406c964f2bea908a35c103ddfda65b17f05530527272d2f8f19f2159cd12211cd5bfc347f41d4cb4c671e1ff07c108e5ff27c3295ea54b6d3253cdc3a8c75d3660aadd5e04707f95a5a0422314635b8598e536976eaad9f759491a547e28b6594288c51340d57f86777b1fdd98d1632591a419fb1fbc8737aeb78247f79f9108385c6b5f4bdde6ef305a1c235f5aea2150c520b45f835299cbc87e18fe32f8621b80113bc065658350b33b5a72b77ceda50dcc5623c66a19963c94beca96edf70277ba11a4fcdf8550158d3e5c778a560900b2b525e370b372d38d9481434b894b8cfca82d56b7a3153949f5369f1dfddef6ed1f1e6e194c24a442514c6355afbeabca1e24b4e9b7a0c0a3586a91448395d7c012fc5e2b4e14bb6c0b07ff166fdf70e9a91856828a52ca60873ae385729e0775dcf40d752955e4b448ef504e26e31c8b5323a20726a22a43c446f9757b3dd4d9ca72a8dd6ca1d76e4c2b83b7ad5179d596196c7f2c81f74dc494c7afcd745b7d1ea8ce11f995741d1fc3441d0aa42bf7666015a5aab3a109fbec1152d736bfb72e412d2d883ed93b96a4113b065a028e961f41894557064402b21feaa3d9f7279a26838726e41a4728548131bea9b2d4a1cdfc71cbb65766afc96a750ed7c6e8b80706db5389739b71597d33393564333a7fdabdb7f1de23e1709de6b8936bcdd4b4f5adb20b076100edf08ac4e38acb4dd892f814e345011c03bed2a55bdb0660b5933ec00b5c2be50476ccf843506ae386a4d9ec05486b3041b37f7e2eeaeebc18a69de98ea37bb802fa5e04d0efd0a717cbb4a8b6f323adea6fd82f5f4a8654276b75ddcb55861369d79889433e65b5fed9546d50d8c64e4ff30e5005b68ff91da838686b597733760f95087e470de0c5bf6f6f304\"",
+            "\"0x6fd66d03f25c655db45db392beeea40702fec9088985549f86b4d1e2efec500093b8dce85e1c0eafb28f24cb0b99d33baf9c4c34cc0a54de1e4a0c91588d000e42350a5aae8a23ece05e3d07d77d1db944658db430e841cb65ba6ab0f3db290f85be19c28e40b9f8c4e4bd4203a7e642e3f7cde873273eb0dc7a7b67c97f6e0ac62c60c8550cb79866d32a676c52620d54c78b9365e5a94adeec84e9d07199017a3a0500512dc14b3241fb8bb0e5a2aaec298e70b4f695928bc844513a8bdd0dd15158621a31bb6703a6ad6d4c8d173a1b0bab442778fb624f623acb879ad00ce61b551695ceec8670daf9a21901ea7a33277be69343b29334b49c066b098c07c79507d6efa106110a1bb92f00416e3a8f7ccbc5bc04a169c6dbfd459325ef0b008804c936cd141f8e60383efac3daced7fa77455cda50a59399adee94f1a009e824911aa777f2a96175b7b9dc53db7c1ae67b28fd0b54f30871771fb1464c0abf63af55e5650fdec7f3bea9b52c3c0e853168adb5af3e7300279d18b7c6a1050793c6b5872aab4024aa2946ee23eacfa09f53dce2dad4a120847b244f50770c911a62a3b16e458eddcab59864aaeaf26560b55f48add9af13d538a55c1f4508a43e29034e5406ae1bdcdfaf09e2463cb79b9d759db23030f42769f5c15c6b0d77f79acd044680b15a2fd1775fc304112fa2c755a430844436dd575e1632400c4c8cd4bda8e4d306b42cac590285bdf71e8994ec764d010884bdd93401484f0431f1f44cd8f0fdba393276343d9a927acbde2d878777a7727994e539dd307009ad1ae1ee4e3194a8af5c5c9dc67e2f3c70793f2d8e6d035ac65286d360f9ae03b83cf58037cbdaa55f11be0936fcb48265a9a224f4eeb3910f6dffa610841f029072c27c3b42888a9cc96de1731d27737c9829647ce21fb978b29f863eac170a405597a5f123552eb31e1efde4d06e20fe763f1f01b531cb99a511118737d706b28f7c07f43933920774fe7be0f1c4e7b915bdbc30de7077ae95f3ce65364506287ac05d941b3b4fe9fca3734fac4bb69eb09aca6c40c118950d6926aa97d70210be29a40ca61bae5001b71c0a9ecadc95b9572cb549eb0fbba6cc327e005c06675388d3c74cdaec026bdf5a22d6179c29db36776388e7e2f90a0bccae7bbb03cc18ded02f8f82eb32809c221e0a71c4e265b9655679463a1f5f7fe97ede5d155837a8634255346010bd16b14e5b24c559abfe5818849e583a99c342f2484f07149e958443a6eff7351d09e7d80be648831d1c81d621a626855dbd2042222c66748500ff28a9225e34dc82e077563ecceb31ecc50b35b13b1182bc23e2ff5d1a941cbefa7bd1e33517eded35094c6eed93c75459ff6dd2ccdde75ea7e8e2711e7e043f0cbbf35744b08854091a5aa5c458e223471d7844b8e7dd8c6edd55b04d90f3bb64d95a11aaaa79291f24fbc5409460e9d065b47e806ec81ebd182f9f7ea2dbaa79eb1cd1a8831dd4258c2cdeb6147a2b755e48ebfcad653319c5b3d847668b6f7038023ad4e0514968a830e54fe2ec226ad266b9a248c71e3515661f238a47d550042a732b443f7c717baad486cb7f5788154a3c3c3519b49fc0c612757c06180be0591a9af6f6a5ea840f17229ac5803cfe0e89fea4f5f50294b2640f26b358d08c2185632d72586ea20380ef76a28942cc90eb237b8c71b5d837a106fcb9fe3fb1a5a1565116d76cad27f477e2a293dcfd1efe807770002e0c4578759aa79947b1f9df971f1ebd316048829824ad7bccc5a1dc3bb54b9d0fe736417cd4658937a58b3c0694441e1c2f2aecec8e64381ccb24feff89069d28287e42365667488087d64d6a8db177a3480afde0595440033900788c77af01cb68486d3584d68bf416433ddf002bd5cd8e5df437b7617314bc06edac5f8cc332f5b61d3296a4e5220fcc932d7a4747f3af0ec3e16bfee94ca58d8bf6c24977256d423530de5d937cb2af161119e079020931e688d0c1f6afe173d040edb78e1902539e63f65fc6c4db930854d2326a2581af871c027e4906f6f7b7ec720bad9ac9c74b001249ae061e30f85dc30edf5aef85288f271c68d5d73ed39c3463ad0bc14aa177ca80cae13e00d2eb1e13d2a9d265eb8ca32b1dd7d8be7b2aee7ffd0c7365133b4a34ff14ce875264da3197281b06a816fad6c30266baae8a37022027fed7056f2a78e630964dc7da864675cc42da810e081d6a30b96f569bc36ac29f7d1166538a36a8ccec90aaba5b9cef2840046a38f86fc80151df9691039a2684b79e3065523ddae77369159f1bd9babcf9bfa63bc3092d6793a7d4abdc33ab98c4f4bd5b8a47d550042a732b443f7c717baad486cb7f5788154a3c3c3519b49fc0c612757c06180be0591a9af6f6a5ea840f17229ac5803cfe0e89fea4f5f50294b2640f26b358d08c2185632d72586ea20380ef76a28942cc90eb237b8c71b5d837a106fcb9fe3fb1a5a1565116d76cad27f477e2a293dcfd1efe807770002e0c457875\"",
+            "\"0x\""
+          ],
+          "entryFunctionIdStr": "0x1::confidential_asset::confidential_transfer"
+        },
+        "extraConfigV1": {}
+      },
+      "signature": {
+        "type": "TYPE_ED25519",
+        "ed25519": {
+          "publicKey": "YRE4cA02Uw2R4Qg6HXbShCsoky6WEeA8ni21lwmWzhI=",
+          "signature": "0Lml7DVU/1clsnRnPRp6kc9KUbzwd3zZ0Xjypp+pa3jLKMDR63KUpVs6JxrWuv1qlf+w6ruWqsdMf9llTu6eAA=="
+        }
+      }
+    },
+    "events": [
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x7479cfb8c85eb869c2e7e718381b315b888c4146fe14d98f9a0a468b03b48b91",
+            "module": "confidential_asset",
+            "name": "Transferred"
+          }
+        },
+        "data": "{\"amount\":{\"chunks\":[{\"left\":{\"data\":\"0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4f\"},\"right\":{\"data\":\"0xd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca50\"}},{\"left\":{\"data\":\"0x5ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf624\"},\"right\":{\"data\":\"0x90dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12\"}},{\"left\":{\"data\":\"0x464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a18\"},\"right\":{\"data\":\"0x14291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648\"}},{\"left\":{\"data\":\"0x061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e77\"},\"right\":{\"data\":\"0x7c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208\"}}]},\"asset_type\":\"0xa\",\"ek_volun_auds\":\"0x\",\"from\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\",\"memo\":\"0x\",\"new_recip_pending_balance\":{\"chunks\":[{\"left\":{\"data\":\"0xa6d9c2788c87535dcf51c85eda837b161c71a35d90ca9b44819033f943b96a4f\"},\"right\":{\"data\":\"0xd46db6e17717ee5ba05807ebe09ec3889741a61a37fdb841fc66f6056303ca50\"}},{\"left\":{\"data\":\"0x5ee9799db35dfd26c0704b647c428ea67e25cb56cd706ce959263c02dcfaf624\"},\"right\":{\"data\":\"0x90dc38fbd63dcd06fdd53ce1f630562a77f62be51bc1e57f0236720396e27c12\"}},{\"left\":{\"data\":\"0x464fbd2581bf6a961cfae713919d839ecc691b40b0bf2f194329b872983f3a18\"},\"right\":{\"data\":\"0x14291a03dd87c6fd1bd1322f70ec0a7d8648ed3548608a79ab30607074057648\"}},{\"left\":{\"data\":\"0x061d2480b947fa5015b8b12129352504d8f8d98b8eafb404763726741ba56e77\"},\"right\":{\"data\":\"0x7c7e39d3d99d0e39b9b319635f5e64cd6060d1c0ab3cc4650699829bec8d4208\"}}]},\"new_sender_available_balance\":{\"chunks\":[{\"left\":{\"data\":\"0xb27ce0857bf821841eacba87617d7168faf3949613727f0f658bf7024b129a7d\"},\"right\":{\"data\":\"0xa07d34405842876a94e44ee060518df2969a64037f58afd1889524914e40a21b\"}},{\"left\":{\"data\":\"0x60eec74a6958f5845b55d83b149e84353b46be08ec6e45523548ff8647dae540\"},\"right\":{\"data\":\"0x68d72b582ec7134c6221c4244c32a4fa627a9f8231678c99c0c7d2adc38b4308\"}},{\"left\":{\"data\":\"0x0087c488322548f53203076a304c7dbec8021b9232f3cd1e04fa2bedcae79e37\"},\"right\":{\"data\":\"0xb8f7b1d57ee8c6a3bd536b3bb30eb752a41812bf4248af5376f7ce843724dc69\"}},{\"left\":{\"data\":\"0xf04a18dd9cb22742164b51656227a8b7256d8d1fa31d81995f9a88b3702d4f67\"},\"right\":{\"data\":\"0x92d5fc1bb038e044d6f011f0b3a5946ff35802de94e160aff20fab7fb3630343\"}},{\"left\":{\"data\":\"0x66f3d9547d729f3b352eb4a0c4f2847210c474d7dd47953cbce4616f2da6844d\"},\"right\":{\"data\":\"0xf285787ca748c1d00f8e3e46b46ea5a8037197e35f41c12553788ec2f4c4dd57\"}},{\"left\":{\"data\":\"0xb84196c66229b5e5b4a3a1b085bd128b569e13f7b975f97f458984bdd61f063d\"},\"right\":{\"data\":\"0xa80d8940ce677379b12e1fc70373baded34a18fc383a856dc7f65da11d499e66\"}},{\"left\":{\"data\":\"0x6ed1004acbde6b59f702892dde2e08bdf4b21e39315c3faebac3eab33c1ab26a\"},\"right\":{\"data\":\"0x5633f629d24a56994311f4d7ad7e4c50b7f57a21235525b6fa1a566c0946f067\"}},{\"left\":{\"data\":\"0x6616db4046c8a3050cd4fe68633491e10eed574a48c783f76f379ea57b9ee059\"},\"right\":{\"data\":\"0xa869cdff01aa527a2c965f8e447544c4a3e2f87b852222872e941f3395f6c152\"}}]},\"sender_auditor_hint\":\"0x\",\"to\":\"0xa1597c3f7af36ba1ec2e4e761b0e8c30423bd160bd377bbe5699a35d0db6d954\"}",
+        "typeStr": "0x1::confidential_asset::Transferred"
+      },
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x1",
+            "module": "fungible_asset",
+            "name": "Withdraw"
+          }
+        },
+        "data": "{\"amount\":\"34900\",\"store\":\"0xf72f31f90d89676e049051c4277171375df66ec7dbcf8f539c75d733b3aa26e9\"}",
+        "typeStr": "0x1::fungible_asset::Withdraw"
+      },
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x1",
+            "module": "fungible_asset",
+            "name": "Deposit"
+          }
+        },
+        "data": "{\"amount\":\"34900\",\"store\":\"0x975b461453e8c36ba66937eaf7f874f7d6a9b26d65e89389304bd1bfee94809\"}",
+        "typeStr": "0x1::fungible_asset::Deposit"
+      },
+      {
+        "key": {
+          "accountAddress": "0x0"
+        },
+        "type": {
+          "type": "MOVE_TYPES_STRUCT",
+          "struct": {
+            "address": "0x1",
+            "module": "transaction_fee",
+            "name": "FeeStatement"
+          }
+        },
+        "data": "{\"execution_gas_units\":\"344\",\"io_gas_units\":\"5\",\"storage_fee_octas\":\"0\",\"storage_fee_refund_octas\":\"0\",\"total_charge_gas_units\":\"349\"}",
+        "typeStr": "0x1::transaction_fee::FeeStatement"
+      }
+    ]
+  },
+  "sizeInfo": {
+    "transactionBytes": 4561,
+    "eventSizeInfo": [
+      {
+        "typeTagBytes": 65,
+        "totalBytes": 1223
+      },
+      {
+        "typeTagBytes": 58,
+        "totalBytes": 98
+      },
+      {
+        "typeTagBytes": 57,
+        "totalBytes": 97
+      },
+      {
+        "typeTagBytes": 63,
+        "totalBytes": 103
+      }
+    ],
+    "writeOpSizeInfo": [
+      {
+        "keyBytes": 110,
+        "valueBytes": 837
+      },
+      {
+        "keyBytes": 87,
+        "valueBytes": 246
+      },
+      {
+        "keyBytes": 84,
+        "valueBytes": 147
+      },
+      {
+        "keyBytes": 87,
+        "valueBytes": 246
+      }
+    ]
+  }
+}

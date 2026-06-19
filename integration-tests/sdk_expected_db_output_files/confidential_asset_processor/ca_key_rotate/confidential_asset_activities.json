@@ -1,0 +1,90 @@
+[
+  {
+    "transaction_version": 4827,
+    "event_index": 0,
+    "event_type": "KeyRotated",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": "0x736f3af18eb712d517f36f103ae156979076e0eab11335b43d1c98a7a855348d",
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "new_ek": {
+          "point": {
+            "data": "0x7ea6e108a22cf9e8112085c8d3b8bdc73d2fd8317309040135cdc4ef4970b12a"
+          }
+        },
+        "new_available_balance": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0xbe8fae5aba97cee3126f8568b193bff19b2e105a910d3cd7fb3aef7858f6c90f"
+              },
+              "right": {
+                "data": "0x3edc9e7dfcfd5788e7769d637762e1e4c50791524c9485e5fbc070e30aa8d71c"
+              }
+            },
+            {
+              "left": {
+                "data": "0x84dae8768b6e5de0554dc1d69289f06bb15be0f8b4db0efb46adfba894772857"
+              },
+              "right": {
+                "data": "0xe8ee14e803fe877ddacf1f934c8477a4b16ccf089a3783c3ed3805a6d3223e55"
+              }
+            },
+            {
+              "left": {
+                "data": "0xf460f992c1d9c3e8bc2438839503632f9e97abefaa5101b911eeae751996f23b"
+              },
+              "right": {
+                "data": "0xa4189ce6f0633be540f018ac4e9f91ed6ca674337dc2d881d6617b7eb82fc56e"
+              }
+            },
+            {
+              "left": {
+                "data": "0xd0d3c881492de60a0cfa520ebb2e961cd9aa00358c4f2c10061c5c0dd44b8932"
+              },
+              "right": {
+                "data": "0x46051f4c2453206bb8c8492f9ac347754026502b3cfb87128c0e876062f57826"
+              }
+            },
+            {
+              "left": {
+                "data": "0xa61a08f43303ad833655340b8082d9fc4ed3dfa2a630122a4ecaad1e4717a910"
+              },
+              "right": {
+                "data": "0xaa7d3a9ca7cdf57cfce6dbe8b186f9b2e12308bbaa092ff16830ce4d1a9edc05"
+              }
+            },
+            {
+              "left": {
+                "data": "0xca81088a1c2d60881b8f7ccd6e128ddc4bf1f23affdfd7a73587fa9473dea634"
+              },
+              "right": {
+                "data": "0x16109b2ea1ccc266198bf48aa2376b491d703bde968dc95a49ebf9a5cdbed95a"
+              }
+            },
+            {
+              "left": {
+                "data": "0xcea698ac554e4775bec294fbcd695e0fc4520ae5b239797a76d06fdb769e0e03"
+              },
+              "right": {
+                "data": "0x289d1aab0bb60a2278dce7d41845d069ad0c24f69f60fe207e9b874515370755"
+              }
+            },
+            {
+              "left": {
+                "data": "0x84708d1510c391e68a19e0f5a209aedf85a0fc1064521f9b15d5d98c401f2663"
+              },
+              "right": {
+                "data": "0x7e97c71ef9fe3df8a3b9752985480dc18b08fc1ef4faa0343ac366e86ef71108"
+              }
+            }
+          ]
+        }
+      },
+      "type": "KeyRotated"
+    },
+    "block_height": 2390,
+    "transaction_timestamp": "2026-04-27T08:35:24.990165"
+  }
+]

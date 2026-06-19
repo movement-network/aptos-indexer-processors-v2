@@ -395,6 +395,25 @@ diesel::table! {
 }
 
 diesel::table! {
+    confidential_asset_activities (transaction_version, event_index) {
+        transaction_version -> Int8,
+        event_index -> Int8,
+        #[max_length = 50]
+        event_type -> Varchar,
+        #[max_length = 66]
+        asset_type -> Nullable<Varchar>,
+        #[max_length = 66]
+        from_address -> Nullable<Varchar>,
+        #[max_length = 66]
+        to_address -> Nullable<Varchar>,
+        event_data -> Jsonb,
+        block_height -> Int8,
+        transaction_timestamp -> Timestamp,
+        inserted_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     current_delegated_staking_pool_balances (staking_pool_address) {
         #[max_length = 66]
         staking_pool_address -> Varchar,
@@ -1366,6 +1385,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     auth_key_account_addresses,
     backfill_processor_status,
     block_metadata_transactions,
+    confidential_asset_activities,
     coin_activities,
     coin_balances,
     coin_infos,

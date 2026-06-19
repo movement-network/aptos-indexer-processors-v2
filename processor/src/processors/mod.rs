@@ -1,6 +1,7 @@
 pub mod account_restoration;
 pub mod account_transactions;
 pub mod ans;
+pub mod confidential_asset;
 pub mod default;
 pub mod events;
 pub mod fungible_asset;

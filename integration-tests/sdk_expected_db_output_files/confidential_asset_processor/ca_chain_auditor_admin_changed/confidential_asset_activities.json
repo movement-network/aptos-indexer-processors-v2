@@ -1,0 +1,18 @@
+[
+  {
+    "transaction_version": 5400,
+    "event_index": 0,
+    "event_type": "ChainAuditorAdminChanged",
+    "asset_type": null,
+    "from_address": null,
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "new_admin": "0x736f3af18eb712d517f36f103ae156979076e0eab11335b43d1c98a7a855348d"
+      },
+      "type": "ChainAuditorAdminChanged"
+    },
+    "block_height": 2700,
+    "transaction_timestamp": "2026-04-27T12:30:00"
+  }
+]

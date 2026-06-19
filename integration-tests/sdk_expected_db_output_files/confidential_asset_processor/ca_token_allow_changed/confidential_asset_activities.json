@@ -1,0 +1,18 @@
+[
+  {
+    "transaction_version": 5200,
+    "event_index": 0,
+    "event_type": "TokenAllowChanged",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": null,
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "allowed": true
+      },
+      "type": "TokenAllowChanged"
+    },
+    "block_height": 2600,
+    "transaction_timestamp": "2026-04-27T11:56:40"
+  }
+]

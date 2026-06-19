@@ -1,0 +1,86 @@
+[
+  {
+    "transaction_version": 5017,
+    "event_index": 2,
+    "event_type": "Withdrawn",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": "0xbe3decc9224454163f8a371f3b32282321d87eeffb7612c629c4b49ef0d2e84c",
+    "to_address": "0xbe3decc9224454163f8a371f3b32282321d87eeffb7612c629c4b49ef0d2e84c",
+    "event_data": {
+      "data": {
+        "amount": "1",
+        "new_available_balance": {
+          "chunks": [
+            {
+              "left": {
+                "data": "0x940c973484a137eab680ee0dc14338d10899672eff466a6eef9cd7fc44335c10"
+              },
+              "right": {
+                "data": "0x2ed7895ac513e625a471ca763f295c00f9e828747dac4c3f7ead7fa2625f7e0b"
+              }
+            },
+            {
+              "left": {
+                "data": "0xdc4b23b15633c7197698a979561b5bba00cbe7c737309a7cf718f8348baf335b"
+              },
+              "right": {
+                "data": "0x327366cb6bf400c47a1d54a513f0bc7fa2250c74f26846091897ec2c1c5f165e"
+              }
+            },
+            {
+              "left": {
+                "data": "0x74db3b9edb4f3813a8eae9e87a1f5d2e2f7e87f5a78699a068099a27c1008b70"
+              },
+              "right": {
+                "data": "0x9e0d2a4fa2fdf002104da5d2ab10cea262f9f855184ae156856ec105c0617f54"
+              }
+            },
+            {
+              "left": {
+                "data": "0xa24c2e0ba6b7e2a3a0fb0f2e037798f9c94043f43d44360b9af03e8d952a3e5a"
+              },
+              "right": {
+                "data": "0xda405fcb71236f3a4a44e1994a272de06dbb77861d30461c4a3cd14e0565d728"
+              }
+            },
+            {
+              "left": {
+                "data": "0x7e92381f4f538ae6ffbf8e61a99406446b8a3d5312e552a639f4387ee595d11f"
+              },
+              "right": {
+                "data": "0x804c8195c352878877d4fa482e4795dd120237acbf6c7fd3a56cb04c33fc6339"
+              }
+            },
+            {
+              "left": {
+                "data": "0xf0999ae3182f720a5f5b19c6831096d909f60a745476cdb09232ca58a9cfb202"
+              },
+              "right": {
+                "data": "0x4e3e3bbcda44b0742085462be8a555413df306b9fcdd955c4fe9ae2935b67519"
+              }
+            },
+            {
+              "left": {
+                "data": "0x8c3766035b1dad8c369f9f5298cd90a37034bd60a75f8532856081e292e9b312"
+              },
+              "right": {
+                "data": "0x70c386d83fa91a137d48aa4fa64d8b9dc9190e1df6bb5f37d96e33385443336e"
+              }
+            },
+            {
+              "left": {
+                "data": "0xb41d9f8285b73abf0d932f493c734fdd210f6b9592554658fa3c286a1eb40258"
+              },
+              "right": {
+                "data": "0x7674eaa4e41b927737edc5d6156558541434f8e9af1a15d7134baf5ceb91d72c"
+              }
+            }
+          ]
+        }
+      },
+      "type": "Withdrawn"
+    },
+    "block_height": 2466,
+    "transaction_timestamp": "2026-04-27T08:35:48.294159"
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "transaction_version": 4622,
+    "event_index": 0,
+    "event_type": "Registered",
+    "asset_type": "0x000000000000000000000000000000000000000000000000000000000000000a",
+    "from_address": "0x7dc4782d55e8493e70477f366bcbef85f3c48713d1db3fc2d50e99318ccb2b45",
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "ek": {
+          "point": {
+            "data": "0x02bd8e95f31ca30e8e34d281cadf6c2cc3aafedce687cf7343b0dcea8d23da42"
+          }
+        }
+      },
+      "type": "Registered"
+    },
+    "block_height": 2308,
+    "transaction_timestamp": "2026-04-27T08:35:08.139543"
+  }
+]

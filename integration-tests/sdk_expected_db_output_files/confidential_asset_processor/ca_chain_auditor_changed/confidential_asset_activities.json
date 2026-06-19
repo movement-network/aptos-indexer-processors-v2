@@ -1,0 +1,27 @@
+[
+  {
+    "transaction_version": 5500,
+    "event_index": 0,
+    "event_type": "ChainAuditorChanged",
+    "asset_type": null,
+    "from_address": null,
+    "to_address": null,
+    "event_data": {
+      "data": {
+        "new_chain_auditor_ek": {
+          "vec": [
+            {
+              "point": {
+                "data": "0x7ea6e108a22cf9e8112085c8d3b8bdc73d2fd8317309040135cdc4ef4970b12a"
+              }
+            }
+          ]
+        },
+        "new_epoch": "1"
+      },
+      "type": "ChainAuditorChanged"
+    },
+    "block_height": 2750,
+    "transaction_timestamp": "2026-04-27T12:46:40"
+  }
+]
