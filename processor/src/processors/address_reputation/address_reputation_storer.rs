@@ -218,7 +218,9 @@ async fn upsert_address_reputation(
         .on_conflict(ar::address)
         .do_update()
         .set((
-            ar::score.eq(sql::<Numeric>("GREATEST(address_reputation.score, EXCLUDED.score)")),
+            ar::score.eq(sql::<Numeric>(
+                "GREATEST(address_reputation.score, EXCLUDED.score)",
+            )),
             ar::highest_seed.eq(sql::<Numeric>(
                 "GREATEST(address_reputation.highest_seed, EXCLUDED.highest_seed)",
             )),

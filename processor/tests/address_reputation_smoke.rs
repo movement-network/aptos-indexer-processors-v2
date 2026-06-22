@@ -116,7 +116,10 @@ fn make_mint_txn() -> Transaction {
         r#"{{"amount":"{MINT_AMOUNT}","relayer":"0xdb8069db67708d47796f837e9862ca9aae6ed5a522bc0b9b7bc25584e77577bb","recipient":"{MINT_RECIPIENT_OWNER}","fee_amount":"0","remote_token":"0x63f169ba69623ba6ccf34620857644feb46d0f87e1d7bbcf8c071d30c3d94bd6","remote_domain":10005}}"#
     );
     Transaction {
-        timestamp: Some(Timestamp { seconds: 1_700_000_000, nanos: 0 }),
+        timestamp: Some(Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 0,
+        }),
         version: 158_025_629,
         info: Some(TransactionInfo {
             hash: vec![],
@@ -147,12 +150,13 @@ fn make_mint_txn() -> Transaction {
 }
 
 fn make_transfer_txn() -> Transaction {
-    let withdraw_data =
-        format!(r#"{{"store":"{SENDER_STORE}","amount":"{TRANSFER_AMOUNT}"}}"#);
-    let deposit_data =
-        format!(r#"{{"store":"{RECIPIENT_STORE}","amount":"{TRANSFER_AMOUNT}"}}"#);
+    let withdraw_data = format!(r#"{{"store":"{SENDER_STORE}","amount":"{TRANSFER_AMOUNT}"}}"#);
+    let deposit_data = format!(r#"{{"store":"{RECIPIENT_STORE}","amount":"{TRANSFER_AMOUNT}"}}"#);
     Transaction {
-        timestamp: Some(Timestamp { seconds: 1_700_000_500, nanos: 0 }),
+        timestamp: Some(Timestamp {
+            seconds: 1_700_000_500,
+            nanos: 0,
+        }),
         version: 163_802_127,
         info: Some(TransactionInfo {
             hash: vec![],
@@ -241,14 +245,25 @@ async fn extractor_emits_bridge_head_and_owner_keyed_transfer() {
     }
 
     // --- assertions ---
-    assert_eq!(inflows.len(), 1, "expected one bridge inflow for the mint txn");
+    assert_eq!(
+        inflows.len(),
+        1,
+        "expected one bridge inflow for the mint txn"
+    );
     let bi = &inflows[0];
     assert_eq!(bi.aptos_recipient, MINT_RECIPIENT_OWNER);
     assert_eq!(bi.bridge_name, "circle_usdcx");
     assert_eq!(bi.src_chain_id, Some(10005));
-    assert!(bi.evm_source.is_none(), "Mint event carries no EVM source field");
+    assert!(
+        bi.evm_source.is_none(),
+        "Mint event carries no EVM source field"
+    );
 
-    assert_eq!(edges.len(), 2, "expected one synthetic bridge edge + one user transfer edge");
+    assert_eq!(
+        edges.len(),
+        2,
+        "expected one synthetic bridge edge + one user transfer edge"
+    );
 
     let bridge_edge = edges
         .iter()

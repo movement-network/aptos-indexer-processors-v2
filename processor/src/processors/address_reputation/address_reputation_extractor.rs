@@ -119,8 +119,10 @@ impl Processable for AddressReputationExtractor {
                 // Bridge check (registry-driven, exact event-type match). We do this BEFORE
                 // generic FA classification so a bridge's emitted FA Deposit (which fires
                 // alongside the Mint) doesn't get double-counted as a user transfer.
-                if let Some(entry) =
-                    self.bridge_registry.iter().find(|e| e.enabled && e.event_type == type_str)
+                if let Some(entry) = self
+                    .bridge_registry
+                    .iter()
+                    .find(|e| e.enabled && e.event_type == type_str)
                 {
                     if let Some(inflow) = parse_bridge_event(
                         event.data.as_str(),
@@ -161,7 +163,11 @@ impl Processable for AddressReputationExtractor {
                     .get(&storage_id)
                     .cloned()
                     .unwrap_or_else(|| storage_id.clone());
-                let amount = match v.get("amount").and_then(|x| x.as_str()).and_then(|s| BigDecimal::from_str(s).ok()) {
+                let amount = match v
+                    .get("amount")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| BigDecimal::from_str(s).ok())
+                {
                     Some(a) => a,
                     None => continue,
                 };

@@ -47,6 +47,7 @@ impl BridgeConfig {
     fn default_amount_path() -> String {
         "amount".to_string()
     }
+
     const fn default_enabled() -> bool {
         true
     }
@@ -56,6 +57,7 @@ impl AddressReputationConfig {
     pub const fn default_channel_size() -> usize {
         10
     }
+
     pub const fn default_decay() -> f64 {
         0.8
     }

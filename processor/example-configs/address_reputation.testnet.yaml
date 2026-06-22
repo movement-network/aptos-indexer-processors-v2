@@ -36,6 +36,8 @@ server_config:
       # One row per OFT module. The module address is the FA creator (and
       # publisher of the `oft_core` Move module).
 
+      # Non-stable, disabled to keep the stables-focused graph clean. Flip
+      # `enabled: true` to include WETH.e in trace results.
       - name: layerzero_weth_e
         module_address: "0x2fa1f2914aa17d239410cb81ab46dd8fa9230272c58bc84e9e8b971eded79ca5"
         event_type: "0x2fa1f2914aa17d239410cb81ab46dd8fa9230272c58bc84e9e8b971eded79ca5::oft_core::OftReceived"
@@ -43,7 +45,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null   # OftReceived only carries `guid`, not the EVM sender
-        enabled: true
+        enabled: false
 
       - name: layerzero_usdt_e
         module_address: "0x9cda672762a6f88e4b608428dd063e03aaf6712f0a427923dd0f1416afa1c075"
@@ -75,8 +77,7 @@ server_config:
         evm_source_field_path: null
         enabled: false
 
-      # LayerZero SendOftDemo (SOD). Demo / test OFT, kept for completeness;
-      # safe to leave on since it's a real OFT-style bridge.
+      # SendOftDemo (SOD) is a LayerZero test/demo OFT, not a stable. Disabled.
       - name: layerzero_send_oft_demo
         module_address: "0xe024846967ef05baed04aa2396802b360dcd975fc704bfd261089cf5355669ad"
         event_type: "0xe024846967ef05baed04aa2396802b360dcd975fc704bfd261089cf5355669ad::oft_core::OftReceived"
@@ -84,7 +85,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null
-        enabled: true
+        enabled: false
 
   transaction_stream_config:
     indexer_grpc_data_service_address: "https://grpc.testnet.movementnetwork.xyz:443"
