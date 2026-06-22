@@ -81,6 +81,11 @@ bitflags! {
         const AUTH_KEY_ACCOUNT_ADDRESSES = 1 << 111;
         const PUBLIC_KEY_AUTH_KEYS = 1 << 112;
         const GAS_FEES = 1 << 123;
+
+        // Address Reputation Processor: 124-127
+        const ADDRESS_TRANSFER_EDGES = 1 << 124;
+        const BRIDGE_INFLOWS = 1 << 125;
+        const ADDRESS_REPUTATION = 1 << 126;
     }
 }
 

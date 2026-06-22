@@ -10,6 +10,7 @@ use crate::{
     },
     processors::{
         account_transactions::account_transactions_model::ParquetAccountTransaction,
+        address_reputation::address_reputation_config::AddressReputationConfig,
         ans::{
             ans_processor::AnsProcessorConfig,
             models::{
@@ -102,6 +103,7 @@ use std::collections::HashSet;
 pub enum ProcessorConfig {
     AccountRestorationProcessor(DefaultProcessorConfig),
     AccountTransactionsProcessor(DefaultProcessorConfig),
+    AddressReputationProcessor(AddressReputationConfig),
     AnsProcessor(AnsProcessorConfig),
     DefaultProcessor(DefaultProcessorConfig),
     EventsProcessor(DefaultProcessorConfig),

@@ -1,0 +1,96 @@
+# AddressReputationProcessor — Movement TESTNET deployment.
+#
+# Bridge addresses below were resolved against the live testnet indexer
+# (https://indexer.testnet.movementnetwork.xyz/v1/graphql) by inspecting real
+# captured events:
+#   - Circle USDCx: event payload shape from txn 158025629
+#                   (../../usdc-bridge/default_config.yaml::usdcx_token_address).
+#   - LayerZero OFT: event shape `<module>::oft_core::OftReceived` with fields
+#                    {guid, src_eid, to_address, amount_received_ld}, verified
+#                    on testnet txns 14291481, 14292998, 14293016, 126884140.
+#
+# `src_eid` values are LayerZero endpoint IDs (40102=BNB testnet, 40108=Avalanche
+# Fuji, etc — full list: docs.layerzero.network).
+
+processor_mode:
+  type: default
+  initial_starting_version: 158000000
+
+server_config:
+  processor_config:
+    type: address_reputation_processor
+    channel_size: 10
+    decay: 0.8
+    bridges:
+      # --- Circle USDCx ---------------------------------------------------
+      - name: circle_usdcx
+        module_address: "0x989577931ff5ec0575071a8bc9084c1c010981169e08cc29e1f82563ed03cafc"
+        event_type: "0x989577931ff5ec0575071a8bc9084c1c010981169e08cc29e1f82563ed03cafc::usdcx::Mint"
+        recipient_field_path: recipient
+        amount_field_path: amount
+        chain_id_field_path: remote_domain
+        evm_source_field_path: null   # carried in the entry function arg, not the event
+        enabled: true
+
+      # --- LayerZero OFTs -------------------------------------------------
+      # One row per OFT module. The module address is the FA creator (and
+      # publisher of the `oft_core` Move module).
+
+      - name: layerzero_weth_e
+        module_address: "0x2fa1f2914aa17d239410cb81ab46dd8fa9230272c58bc84e9e8b971eded79ca5"
+        event_type: "0x2fa1f2914aa17d239410cb81ab46dd8fa9230272c58bc84e9e8b971eded79ca5::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null   # OftReceived only carries `guid`, not the EVM sender
+        enabled: true
+
+      - name: layerzero_usdt_e
+        module_address: "0x9cda672762a6f88e4b608428dd063e03aaf6712f0a427923dd0f1416afa1c075"
+        event_type: "0x9cda672762a6f88e4b608428dd063e03aaf6712f0a427923dd0f1416afa1c075::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        enabled: true
+
+      - name: layerzero_usdc_e
+        module_address: "0x33987308d6698c3def1f155c8ea394360e9756b0a22e64fb20834327f04a1e42"
+        event_type: "0x33987308d6698c3def1f155c8ea394360e9756b0a22e64fb20834327f04a1e42::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        enabled: true
+
+      # Dormant USDC.e variant: module is published but no inbound OftReceived
+      # events observed on testnet at the time of writing. Disabled by default
+      # so it's silent until activity shows up.
+      - name: layerzero_usdc_e_alt
+        module_address: "0xdbfc7ba6398103cf01b65066402f7ec22fec40be31c5250d9928c6ff86a146e8"
+        event_type: "0xdbfc7ba6398103cf01b65066402f7ec22fec40be31c5250d9928c6ff86a146e8::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        enabled: false
+
+      # LayerZero SendOftDemo (SOD). Demo / test OFT, kept for completeness;
+      # safe to leave on since it's a real OFT-style bridge.
+      - name: layerzero_send_oft_demo
+        module_address: "0xe024846967ef05baed04aa2396802b360dcd975fc704bfd261089cf5355669ad"
+        event_type: "0xe024846967ef05baed04aa2396802b360dcd975fc704bfd261089cf5355669ad::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        enabled: true
+
+  transaction_stream_config:
+    indexer_grpc_data_service_address: "https://grpc.testnet.movementnetwork.xyz:443"
+    auth_token: REPLACE_ME
+
+  db_config:
+    type: postgres_config
+    connection_string: postgresql://postgres:postgres@localhost:5432/address_reputation
+    db_pool_size: 32
