@@ -62,7 +62,10 @@ struct EvmRow {
     hops_min: i32,
 }
 
-async fn read_rows(pool: &aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool, addr: &str) -> Vec<EvmRow> {
+async fn read_rows(
+    pool: &aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool,
+    addr: &str,
+) -> Vec<EvmRow> {
     let mut conn = pool.get().await.unwrap();
     sql_query("SELECT evm_address, evm_fund, hops_min FROM address_evm_sources WHERE movement_address = $1 ORDER BY evm_address")
         .bind::<Text, _>(addr)
@@ -81,7 +84,12 @@ fn config() -> AddressReputationConfig {
 }
 
 /// Fabricate M bridge inflow edges + BridgeInflow rows, all delivering to A.
-fn seed_bridge_batch(a: &str, m: u32, base_ord: i64, amounts: &[u64]) -> (Vec<TransferEdge>, Vec<BridgeInflow>) {
+fn seed_bridge_batch(
+    a: &str,
+    m: u32,
+    base_ord: i64,
+    amounts: &[u64],
+) -> (Vec<TransferEdge>, Vec<BridgeInflow>) {
     assert_eq!(amounts.len() as u32, m);
     let mut edges = Vec::new();
     let mut inflows = Vec::new();
@@ -129,9 +137,14 @@ fn transfer(from: &str, to: &str, amount: u64, version: i64, event_index: i64) -
     }
 }
 
-async fn spin_up() -> (PostgresTestDatabase, aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool) {
+async fn spin_up() -> (
+    PostgresTestDatabase,
+    aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool,
+) {
     let mut db = PostgresTestDatabase::new();
-    db.setup().await.expect("PostgresTestDatabase setup failed -- Docker/Postgres available?");
+    db.setup()
+        .await
+        .expect("PostgresTestDatabase setup failed -- Docker/Postgres available?");
     let pool = new_db_pool(db.get_db_url().as_str(), Some(4))
         .await
         .expect("failed to create pool");
@@ -161,14 +174,21 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
     let seed_total: u64 = amounts.iter().sum();
     let (edges, inflows) = seed_bridge_batch(A_ADDR, m, 1000, &amounts);
     storer
-        .process(TransactionContext { data: (edges, inflows), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (edges, inflows),
+            metadata: Default::default(),
+        })
         .await
         .expect("seed batch")
         .expect("seed output");
 
     // Sanity: A has M rows, all at hop 0.
     let a_rows = read_rows(&pool, A_ADDR).await;
-    assert_eq!(a_rows.len(), m as usize, "A should hold M evm sources after seeding");
+    assert_eq!(
+        a_rows.len(),
+        m as usize,
+        "A should hold M evm sources after seeding"
+    );
     assert!(a_rows.iter().all(|r| r.hops_min == 0));
 
     // 2) One A -> B transfer of `transfer_amt`. B should get M rows, each with
@@ -177,13 +197,20 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
     let transfer_amt: u64 = 700;
     let edge = transfer(A_ADDR, B_ADDR, transfer_amt, 2000, 0);
     storer
-        .process(TransactionContext { data: (vec![edge], vec![]), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (vec![edge], vec![]),
+            metadata: Default::default(),
+        })
         .await
         .expect("transfer batch")
         .expect("transfer output");
 
     let b_rows = read_rows(&pool, B_ADDR).await;
-    assert_eq!(b_rows.len(), m as usize, "B should have M evm sources after A->B");
+    assert_eq!(
+        b_rows.len(),
+        m as usize,
+        "B should have M evm sources after A->B"
+    );
     for r in &b_rows {
         assert_eq!(r.hops_min, 1, "downstream hop should be exactly 1");
     }
@@ -195,24 +222,38 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
         .iter()
         .fold(BigDecimal::from(0), |acc, r| acc + &r.evm_fund);
     let expected = BigDecimal::from(transfer_amt);
-    assert_eq!(total_b, expected, "sum(evm_fund on B) must equal transfer amount");
+    assert_eq!(
+        total_b, expected,
+        "sum(evm_fund on B) must equal transfer amount"
+    );
 
     // Spot-check one share: E0 seeded 100 out of 1500, so B[E0] = 700 * 100 / 1500.
     let e0 = evm(0);
-    let e0_row = b_rows.iter().find(|r| r.evm_address == e0).expect("E0 present");
+    let e0_row = b_rows
+        .iter()
+        .find(|r| r.evm_address == e0)
+        .expect("E0 present");
     // Postgres NUMERIC division may produce a specific scale; compare via
     // |e0 - 700*100/1500| < epsilon rather than exact string equality.
-    let target = BigDecimal::from(transfer_amt) * BigDecimal::from(100) / BigDecimal::from(seed_total);
+    let target =
+        BigDecimal::from(transfer_amt) * BigDecimal::from(100) / BigDecimal::from(seed_total);
     let diff = (&e0_row.evm_fund - &target).abs();
-    assert!(diff < BigDecimal::from_str("0.000001").unwrap(),
+    assert!(
+        diff < BigDecimal::from_str("0.000001").unwrap(),
         "E0 share off: got {}, expected ~{}, diff={}",
-        e0_row.evm_fund, target, diff);
+        e0_row.evm_fund,
+        target,
+        diff
+    );
 
     // A must be unchanged (no debit on outflow).
     let a_rows_after = read_rows(&pool, A_ADDR).await;
     assert_eq!(a_rows_after.len(), m as usize);
     for (before, after) in a_rows.iter().zip(a_rows_after.iter()) {
-        assert_eq!(before.evm_fund, after.evm_fund, "sender's evm_fund must not change on outflow");
+        assert_eq!(
+            before.evm_fund, after.evm_fund,
+            "sender's evm_fund must not change on outflow"
+        );
     }
 }
 
@@ -229,7 +270,10 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
         bi.evm_source = Some(evm(i as u32 + 1));
     }
     storer
-        .process(TransactionContext { data: (a_edges, a_inflows), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (a_edges, a_inflows),
+            metadata: Default::default(),
+        })
         .await
         .expect("A seed")
         .expect("A seed output");
@@ -241,26 +285,41 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
         bi.evm_source = Some(evm(i as u32 + 4));
     }
     storer
-        .process(TransactionContext { data: (b_edges, b_inflows), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (b_edges, b_inflows),
+            metadata: Default::default(),
+        })
         .await
         .expect("B seed")
         .expect("B seed output");
 
     let b_before = read_rows(&pool, B_ADDR).await;
     assert_eq!(b_before.len(), 5);
-    let get = |rows: &[EvmRow], e: &str| rows.iter().find(|r| r.evm_address == e).cloned().map(|r| (r.evm_fund, r.hops_min));
+    let get = |rows: &[EvmRow], e: &str| {
+        rows.iter()
+            .find(|r| r.evm_address == e)
+            .cloned()
+            .map(|r| (r.evm_fund, r.hops_min))
+    };
 
     // Now A -> B, amount 500 (== A's total funding). Then each of E1..E5 sends
     // its full share (100) into B.
     let edge = transfer(A_ADDR, B_ADDR, 500, 2000, 0);
     storer
-        .process(TransactionContext { data: (vec![edge], vec![]), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (vec![edge], vec![]),
+            metadata: Default::default(),
+        })
         .await
         .expect("A->B")
         .expect("A->B output");
 
     let b_after = read_rows(&pool, B_ADDR).await;
-    assert_eq!(b_after.len(), 8, "B should hold union of {{E1..E5}} + {{E4..E8}} = 8");
+    assert_eq!(
+        b_after.len(),
+        8,
+        "B should hold union of {{E1..E5}} + {{E4..E8}} = 8"
+    );
 
     // New sources on B: E1, E2, E3 -- fund = 100, hop = 1.
     for i in 1..=3 {
@@ -278,12 +337,18 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
     // Non-overlapping prior sources E6..E8: unchanged.
     for i in 6..=8 {
         let (fund, hop) = get(&b_after, &evm(i)).unwrap();
-        assert_eq!(fund, BigDecimal::from(50), "prior-only E{i} evm_fund unchanged");
+        assert_eq!(
+            fund,
+            BigDecimal::from(50),
+            "prior-only E{i} evm_fund unchanged"
+        );
         assert_eq!(hop, 0, "prior-only E{i} hop unchanged");
     }
 
     // A must remain unchanged.
     let a_after = read_rows(&pool, A_ADDR).await;
     assert_eq!(a_after.len(), 5);
-    assert!(a_after.iter().all(|r| r.hops_min == 0 && r.evm_fund == BigDecimal::from(100)));
+    assert!(a_after
+        .iter()
+        .all(|r| r.hops_min == 0 && r.evm_fund == BigDecimal::from(100)));
 }

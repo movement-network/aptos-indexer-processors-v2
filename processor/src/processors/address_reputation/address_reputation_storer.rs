@@ -198,10 +198,7 @@ impl Processable for AddressReputationStorer {
 
         debug!(
             "address_reputation: stored {} edges, {} inflows for versions [{}, {}]",
-            edges_len,
-            inflows_len,
-            start_v,
-            end_v,
+            edges_len, inflows_len, start_v, end_v,
         );
 
         Ok(Some(TransactionContext {
