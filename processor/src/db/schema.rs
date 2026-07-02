@@ -1371,6 +1371,22 @@ diesel::table! {
 }
 
 diesel::table! {
+    address_evm_sources (movement_address, asset_type, evm_address) {
+        #[max_length = 66]
+        movement_address -> Varchar,
+        #[max_length = 1100]
+        asset_type -> Varchar,
+        #[max_length = 66]
+        evm_address -> Varchar,
+        evm_fund -> Numeric,
+        first_seen_ord -> Int8,
+        last_seen_ord -> Int8,
+        hops_min -> Int4,
+        inserted_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     address_transfer_edges (transaction_version, event_index) {
         transaction_version -> Int8,
         event_index -> Int8,
@@ -1424,6 +1440,7 @@ diesel::table! {
 
 diesel::allow_tables_to_appear_in_same_query!(
     account_transactions,
+    address_evm_sources,
     address_reputation,
     address_transfer_edges,
     bridge_inflows,

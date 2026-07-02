@@ -18,6 +18,11 @@ pub struct AddressReputationConfig {
     /// at runtime, append to the config and restart the processor.
     #[serde(default)]
     pub bridges: Vec<BridgeConfig>,
+    /// If true, maintain the `address_evm_sources` rollup (per-address EVM funding
+    /// provenance). Disable for lower write volume when only the score / edge log
+    /// is needed.
+    #[serde(default = "AddressReputationConfig::default_propagate_evm_sources")]
+    pub propagate_evm_sources: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -61,6 +66,10 @@ impl AddressReputationConfig {
     pub const fn default_decay() -> f64 {
         0.8
     }
+
+    pub const fn default_propagate_evm_sources() -> bool {
+        true
+    }
 }
 
 impl Default for AddressReputationConfig {
@@ -69,6 +78,7 @@ impl Default for AddressReputationConfig {
             channel_size: Self::default_channel_size(),
             decay: Self::default_decay(),
             bridges: Vec::new(),
+            propagate_evm_sources: Self::default_propagate_evm_sources(),
         }
     }
 }

@@ -61,6 +61,40 @@ CREATE TABLE IF NOT EXISTS address_reputation (
 );
 CREATE INDEX IF NOT EXISTS idx_ar_score ON address_reputation (score DESC);
 
+-- Per-address rollup of upstream EVM funding sources.
+-- One row per (movement_address, asset_type, evm_address).
+--
+-- `evm_fund` is the cumulative amount of `asset_type` that has flowed into
+-- `movement_address` attributable to `evm_address`. Monotone non-decreasing --
+-- outflows are NOT debited. Interpret at read time via
+-- `evm_fund / current_balance(movement_address, asset_type)`.
+--
+-- Propagation (see AddressReputationStorer):
+--   * Bridge inflow with evm_source E delivering X to B:
+--       upsert (B, asset, E, evm_fund += X, hops_min = 0).
+--   * Non-bridge transfer A -> B of X (asset), for each row (A, asset, E, w):
+--       upsert (B, asset, E,
+--               evm_fund += X * w / SUM_E(w over A,asset),
+--               hops_min = LEAST(hops_min, A's hops_min + 1)).
+--     The sender's rows are NOT touched.
+--
+-- `last_seen_ord` is a monotone i64 = (txn_version << 24) | event_index, so
+-- "most recent X evm sources for this address" is an indexed range scan.
+CREATE TABLE IF NOT EXISTS address_evm_sources (
+    movement_address VARCHAR(66)   NOT NULL,
+    asset_type       VARCHAR(1100) NOT NULL,
+    evm_address      VARCHAR(66)   NOT NULL,
+    evm_fund         NUMERIC       NOT NULL,
+    first_seen_ord   BIGINT        NOT NULL,
+    last_seen_ord    BIGINT        NOT NULL,
+    hops_min         INTEGER       NOT NULL,
+    inserted_at      TIMESTAMP     NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (movement_address, asset_type, evm_address)
+);
+CREATE INDEX IF NOT EXISTS idx_aes_recent
+    ON address_evm_sources (movement_address, asset_type, last_seen_ord DESC);
+CREATE INDEX IF NOT EXISTS idx_aes_evm ON address_evm_sources (evm_address);
+
 -- Seed: Circle USDCx bridge (Movement's bridged USDC, ../usdc-bridge/smart_contracts/sources/usdcx.move).
 -- The Mint event is emitted when funds arrive from a remote chain (USDC -> USDCx mint).
 -- Fields available in the event:
