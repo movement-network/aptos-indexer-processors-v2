@@ -223,14 +223,11 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
 
     // Seed A with E1..E5 (indices 1..=5), amount 100 each -> total 500.
     let a_amounts: Vec<u64> = (1..=5).map(|_| 100).collect();
-    let (mut a_edges, mut a_inflows) = seed_bridge_batch(A_ADDR, 5, 1000, &a_amounts);
+    let (a_edges, mut a_inflows) = seed_bridge_batch(A_ADDR, 5, 1000, &a_amounts);
     // shift EVM indices to be 1..=5 not 0..=4
-    for i in 0..a_edges.len() {
-        a_inflows[i].evm_source = Some(evm(i as u32 + 1));
+    for (i, bi) in a_inflows.iter_mut().enumerate() {
+        bi.evm_source = Some(evm(i as u32 + 1));
     }
-    // (edges don't carry evm; storer looks them up from inflows) -- but avoid
-    // unused warnings by touching a_edges
-    let _ = &mut a_edges;
     storer
         .process(TransactionContext { data: (a_edges, a_inflows), metadata: Default::default() })
         .await
@@ -239,11 +236,10 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
 
     // Seed B with E4..=E8, amount 50 each. This gives us overlap (E4, E5) with A.
     let b_amounts: Vec<u64> = (4..=8).map(|_| 50).collect();
-    let (mut b_edges, mut b_inflows) = seed_bridge_batch(B_ADDR, 5, 1200, &b_amounts);
-    for i in 0..b_edges.len() {
-        b_inflows[i].evm_source = Some(evm(i as u32 + 4));
+    let (b_edges, mut b_inflows) = seed_bridge_batch(B_ADDR, 5, 1200, &b_amounts);
+    for (i, bi) in b_inflows.iter_mut().enumerate() {
+        bi.evm_source = Some(evm(i as u32 + 4));
     }
-    let _ = &mut b_edges;
     storer
         .process(TransactionContext { data: (b_edges, b_inflows), metadata: Default::default() })
         .await
