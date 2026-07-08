@@ -20,7 +20,6 @@ server_config:
   processor_config:
     type: address_reputation_processor
     channel_size: 10
-    decay: 0.8
     bridges:
       # --- Circle USDCx ---------------------------------------------------
       - name: circle_usdcx
@@ -29,7 +28,8 @@ server_config:
         recipient_field_path: recipient
         amount_field_path: amount
         chain_id_field_path: remote_domain
-        evm_source_field_path: null   # carried in the entry function arg, not the event
+        evm_source_field_path: null   # not in the Mint event; recovered from IntentPayload
+        payload_kind: circle_intent   # decode `local_depositor` from mint() arg[0]
         enabled: true
 
       # --- LayerZero OFTs -------------------------------------------------

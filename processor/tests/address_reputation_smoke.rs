@@ -15,8 +15,10 @@
 use aptos_indexer_processor_sdk::{
     aptos_protos::{
         transaction::v1::{
-            transaction::TxnData, write_set_change::Change, Event, EventKey, MoveStructTag,
-            Transaction, TransactionInfo, UserTransaction, WriteResource, WriteSetChange,
+            transaction::TxnData, transaction_payload::Payload as PayloadType,
+            write_set_change::Change, EntryFunctionId, EntryFunctionPayload, Event, EventKey,
+            MoveModuleId, MoveStructTag, Transaction, TransactionInfo, TransactionPayload,
+            UserTransaction, UserTransactionRequest, WriteResource, WriteSetChange,
         },
         util::timestamp::Timestamp,
     },
@@ -41,6 +43,13 @@ const MINT_RECIPIENT_STORE: &str =
 const MINT_AMOUNT: &str = "4206062";
 // USDCx token metadata address (same as the bridge module_address by Move design).
 const USDCX_METADATA: &str = "0x989577931ff5ec0575071a8bc9084c1c010981169e08cc29e1f82563ed03cafc";
+// Real IntentPayload arg[0] captured from testnet mint txn 175293642. The
+// `local_depositor` field (bytes 140..172, last 20 = EVM address) is
+// 0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f. We reuse this bytes-string on
+// the mint fixture below so the intent decoder path is exercised end-to-end;
+// the extractor doesn't cross-check the payload's recipient against the event.
+const INTENT_PAYLOAD_HEX: &str = "0x5a2e0acd000000010000000000000000000000000000000000000000000000000000000005f5e1000000271563f169ba69623ba6ccf34620857644feb46d0f87e1d7bbcf8c071d30c3d94bd607979ccb27c9d3167afc5cb70be06f6b6efc69057b8790708018906e1c9cb3020000000000000000000000001c7d4b196cb0c7b01d743fbc6116a902379c72380000000000000000000000008f5633d77eb1d6bf6c0d357148135a91b0e1f87f000000000000000000000000000000000000000000000000000000000000000023a15209170f589991f969f27f59c2e3f4f21c01bd7ceb8d6e0ad8f6c372fdc300000000";
+const INTENT_LOCAL_DEPOSITOR: &str = "0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f";
 
 // Transfer txn 163802127
 const SENDER_OWNER: &str = "0xbb45ce1d3dfd1b8520c637e8968f9333022ec35d43cd5a03c053af98c0d2914f";
@@ -140,12 +149,41 @@ fn make_mint_txn() -> Transaction {
         r#type: 4, // User
         size_info: None,
         txn_data: Some(TxnData::User(UserTransaction {
-            request: None,
+            request: Some(mint_request()),
             events: vec![
                 fa_event("0x1::fungible_asset::Deposit", fa_deposit_data),
                 fa_event(MINT_EVENT_TYPE, mint_data),
             ],
         })),
+    }
+}
+
+/// Minimal UserTransactionRequest that carries a `usdcx::mint` entry-function
+/// payload whose first argument is the real testnet IntentPayload. Every field
+/// the extractor doesn't read is left at its Default.
+fn mint_request() -> UserTransactionRequest {
+    let entry_fn = EntryFunctionPayload {
+        function: Some(EntryFunctionId {
+            module: Some(MoveModuleId {
+                address: USDCX_MODULE.to_string(),
+                name: "usdcx".to_string(),
+            }),
+            name: "mint".to_string(),
+        }),
+        type_arguments: vec![],
+        // Arguments come out of the indexer already JSON-quoted. The intent
+        // is arg[0]; the remaining args (attestation bytes, fee u64) are
+        // irrelevant to the extractor.
+        arguments: vec![format!("\"{INTENT_PAYLOAD_HEX}\"")],
+        entry_function_id_str: format!("{USDCX_MODULE}::usdcx::mint"),
+    };
+    UserTransactionRequest {
+        payload: Some(TransactionPayload {
+            r#type: 1, // EntryFunctionPayload
+            payload: Some(PayloadType::EntryFunctionPayload(entry_fn)),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
@@ -197,6 +235,7 @@ fn registry() -> Arc<Vec<BridgeRegistryEntry>> {
         recipient_field_path: "recipient".to_string(),
         amount_field_path: "amount".to_string(),
         chain_id_field_path: Some("remote_domain".to_string()),
+        payload_kind: Some("circle_intent".to_string()),
         enabled: true,
     }])
 }
@@ -254,10 +293,9 @@ async fn extractor_emits_bridge_head_and_owner_keyed_transfer() {
     assert_eq!(bi.aptos_recipient, MINT_RECIPIENT_OWNER);
     assert_eq!(bi.bridge_name, "circle_usdcx");
     assert_eq!(bi.src_chain_id, Some(10005));
-    assert!(
-        bi.evm_source.is_none(),
-        "Mint event carries no EVM source field"
-    );
+    // Circle Mint carries no EVM source in the event; the extractor recovers
+    // it from the transaction's IntentPayload via `payload_kind: circle_intent`.
+    assert_eq!(bi.evm_source.as_deref(), Some(INTENT_LOCAL_DEPOSITOR));
 
     assert_eq!(
         edges.len(),

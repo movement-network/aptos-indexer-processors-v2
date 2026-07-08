@@ -81,6 +81,7 @@ impl AddressReputationProcessor {
                 recipient_field_path: b.recipient_field_path.clone(),
                 amount_field_path: b.amount_field_path.clone(),
                 chain_id_field_path: b.chain_id_field_path.clone(),
+                payload_kind: b.payload_kind.clone(),
                 enabled: b.enabled,
             })
             .collect()

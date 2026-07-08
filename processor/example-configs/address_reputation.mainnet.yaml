@@ -10,7 +10,6 @@ server_config:
   processor_config:
     type: address_reputation_processor
     channel_size: 10
-    decay: 0.8
     bridges:
       # Circle USDCx bridge on Movement mainnet. Replace module_address with
       # the published `circle_remote::usdcx` address (which is also the USDCx
@@ -22,6 +21,7 @@ server_config:
         amount_field_path: amount
         chain_id_field_path: remote_domain
         evm_source_field_path: null
+        payload_kind: circle_intent   # decode `local_depositor` from mint() arg[0]
         enabled: false  # flip to true after addresses are filled in
 
   transaction_stream_config:

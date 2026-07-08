@@ -1358,19 +1358,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    address_reputation (address) {
-        #[max_length = 66]
-        address -> Varchar,
-        score -> Numeric,
-        highest_seed -> Numeric,
-        nearest_seed_hop -> Nullable<Int4>,
-        last_updated_version -> Int8,
-        last_updated_timestamp -> Timestamp,
-        inserted_at -> Timestamp,
-    }
-}
-
-diesel::table! {
     address_evm_sources (movement_address, asset_type, evm_address) {
         #[max_length = 66]
         movement_address -> Varchar,
@@ -1441,7 +1428,6 @@ diesel::table! {
 diesel::allow_tables_to_appear_in_same_query!(
     account_transactions,
     address_evm_sources,
-    address_reputation,
     address_transfer_edges,
     bridge_inflows,
     evm_address_risk_scores,

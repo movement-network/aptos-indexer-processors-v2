@@ -3,9 +3,7 @@
 
 #![allow(clippy::extra_unused_lifetimes)]
 
-use crate::schema::{
-    address_evm_sources, address_reputation, address_transfer_edges, bridge_inflows,
-};
+use crate::schema::{address_evm_sources, address_transfer_edges, bridge_inflows};
 use bigdecimal::BigDecimal;
 use field_count::FieldCount;
 use serde::{Deserialize, Serialize};
@@ -38,17 +36,6 @@ pub struct BridgeInflow {
     pub transaction_timestamp: chrono::NaiveDateTime,
 }
 
-#[derive(Clone, Debug, Deserialize, FieldCount, Insertable, Queryable, Serialize)]
-#[diesel(table_name = address_reputation)]
-pub struct AddressReputation {
-    pub address: String,
-    pub score: BigDecimal,
-    pub highest_seed: BigDecimal,
-    pub nearest_seed_hop: Option<i32>,
-    pub last_updated_version: i64,
-    pub last_updated_timestamp: chrono::NaiveDateTime,
-}
-
 /// One row per (movement_address, asset_type, evm_address). `evm_fund` is
 /// monotonically non-decreasing and represents cumulative attributed inflow of
 /// the asset that traces back to the EVM address (across all hops so far).
@@ -74,6 +61,12 @@ pub struct BridgeRegistryEntry {
     pub recipient_field_path: String,
     pub amount_field_path: String,
     pub chain_id_field_path: Option<String>,
+    /// Optional named decoder for the transaction's entry-function payload,
+    /// used when the EVM source isn't present in the event data itself. The
+    /// only value currently supported is `"circle_intent"`, which decodes
+    /// `local_depositor` out of Circle's USDCx `IntentPayload` (see
+    /// `intent_payload.rs`).
+    pub payload_kind: Option<String>,
     pub enabled: bool,
 }
 

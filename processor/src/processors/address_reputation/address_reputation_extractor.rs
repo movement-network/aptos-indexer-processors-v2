@@ -4,8 +4,9 @@
 use crate::{
     db::resources::FromWriteResource,
     processors::{
-        address_reputation::address_reputation_model::{
-            BridgeInflow, BridgeRegistryEntry, TransferEdge,
+        address_reputation::{
+            address_reputation_model::{BridgeInflow, BridgeRegistryEntry, TransferEdge},
+            intent_payload,
         },
         objects::v2_object_utils::ObjectWithMetadata,
     },
@@ -13,7 +14,10 @@ use crate::{
 use ahash::AHashMap;
 use aptos_indexer_processor_sdk::{
     aptos_indexer_transaction_stream::utils::time::parse_timestamp,
-    aptos_protos::transaction::v1::{transaction::TxnData, write_set_change::Change, Transaction},
+    aptos_protos::transaction::v1::{
+        transaction::TxnData, transaction_payload::Payload as PayloadType,
+        write_set_change::Change, Transaction,
+    },
     traits::{async_step::AsyncRunType, AsyncStep, NamedStep, Processable},
     types::transaction_context::TransactionContext,
     utils::{convert::standardize_address, errors::ProcessorError},
@@ -124,13 +128,20 @@ impl Processable for AddressReputationExtractor {
                     .iter()
                     .find(|e| e.enabled && e.event_type == type_str)
                 {
-                    if let Some(inflow) = parse_bridge_event(
+                    if let Some(mut inflow) = parse_bridge_event(
                         event.data.as_str(),
                         entry,
                         txn_version,
                         event_index,
                         block_timestamp,
                     ) {
+                        // Fall back to the transaction's entry-function payload when
+                        // the event itself doesn't carry the EVM depositor (Circle
+                        // USDCx puts it in the IntentPayload arg, not the Mint event).
+                        if inflow.evm_source.is_none() {
+                            inflow.evm_source =
+                                decode_payload_evm_source(txn, entry.payload_kind.as_deref());
+                        }
                         txn_inflows.push(inflow);
                         continue;
                     }
@@ -289,6 +300,34 @@ fn json_field(data: &Value, path: &str) -> Option<String> {
     match cur {
         Value::String(s) => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Dispatches to a named payload decoder to recover the EVM source address
+/// from the transaction's entry-function arguments. Returns `None` when the
+/// payload kind isn't recognized, the txn isn't an entry-function call, or the
+/// decoder can't find a well-formed address.
+fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<String> {
+    let kind = kind?;
+    let user = match txn.txn_data.as_ref()? {
+        TxnData::User(u) => u,
+        _ => return None,
+    };
+    let payload = user.request.as_ref()?.payload.as_ref()?.payload.as_ref()?;
+    let entry_fn = match payload {
+        PayloadType::EntryFunctionPayload(ef) => ef,
+        _ => return None,
+    };
+    match kind {
+        // Circle USDCx: `mint(&signer, intent, attestation, fee)` — intent
+        // is arg[0], a big-endian IntentPayload whose `local_depositor` is the
+        // EVM address that called `depositForBurn` on the source chain.
+        "circle_intent" => {
+            let arg = entry_fn.arguments.first()?;
+            let bytes = intent_payload::parse_hex_arg(arg)?;
+            intent_payload::decode_local_depositor(&bytes)
+        },
         _ => None,
     }
 }

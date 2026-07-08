@@ -49,18 +49,6 @@ CREATE TABLE IF NOT EXISTS evm_address_risk_scores (
     inserted_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
--- Materialized per-address reputation. Updated on every new inbound edge.
-CREATE TABLE IF NOT EXISTS address_reputation (
-    address VARCHAR(66) NOT NULL PRIMARY KEY,
-    score NUMERIC(5,4) NOT NULL DEFAULT 0,
-    highest_seed NUMERIC(5,4) NOT NULL DEFAULT 0,
-    nearest_seed_hop INTEGER,
-    last_updated_version BIGINT NOT NULL,
-    last_updated_timestamp TIMESTAMP NOT NULL,
-    inserted_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_ar_score ON address_reputation (score DESC);
-
 -- Per-address rollup of upstream EVM funding sources.
 -- One row per (movement_address, asset_type, evm_address).
 --

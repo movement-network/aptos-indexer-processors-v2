@@ -16,12 +16,10 @@ use aptos_indexer_processor_sdk::{
     utils::errors::ProcessorError,
 };
 use async_trait::async_trait;
-use bigdecimal::{BigDecimal, FromPrimitive, Zero};
+use bigdecimal::BigDecimal;
 use diesel::{
-    dsl::sql,
     sql_query,
     sql_types::{BigInt, Numeric, Text, Varchar},
-    ExpressionMethods, OptionalExtension, QueryDsl,
 };
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
 use tracing::debug;
@@ -65,23 +63,16 @@ impl Processable for AddressReputationStorer {
                 query: None,
             })?;
 
-        let decay = BigDecimal::from_f64(self.config.decay).unwrap_or_else(|| BigDecimal::from(0));
         let propagate_evm = self.config.propagate_evm_sources;
         let start_v = input.metadata.start_version;
         let end_v = input.metadata.end_version;
         let edges_len = edges.len();
         let inflows_len = inflows.len();
 
-        // Wrap the whole batch -- inserts, reputation propagation, and EVM-source
-        // rollup upserts -- in a single Postgres transaction. This gives us two
-        // properties we rely on:
-        //   1. Atomic: partial failure rolls back; the batch is retried cleanly.
-        //   2. Read-your-writes within the batch: a bridge seed written for edge
-        //      idx=5 is visible to the A->B upsert done for edge idx=7, so
-        //      multi-hop cascades within a single txn/batch produce the same
-        //      result as processing the batch one-edge-at-a-time.
-        // Concurrency is left to the SDK: this processor runs single-threaded
-        // per shard, so batches are strictly serialized end-to-end.
+        // Wrap edge/inflow inserts and the address_evm_sources rollup in one
+        // Postgres transaction so the batch is atomic and read-your-writes
+        // within the batch is preserved (a seed for edge idx=5 is visible when
+        // edge idx=7 splits its sender's rollup).
         type BoxErr = Box<dyn std::error::Error + Send + Sync>;
         conn.transaction::<_, BoxErr, _>(move |conn| {
             let edges = edges;
@@ -119,38 +110,16 @@ impl Processable for AddressReputationStorer {
                         })?;
                 }
 
-                for edge in &edges {
-                    // Reputation score propagation (unchanged semantics).
-                    let (contribution, highest_seed, hop) = if edge.is_bridge_inflow {
-                        let seed = lookup_bridge_seed(conn, &inflows, edge).await;
-                        (seed.clone(), seed, Some(0))
-                    } else {
-                        let sender = lookup_score(conn, &edge.from_address).await;
-                        let s = &decay * &sender.score;
-                        let hop = sender.nearest_seed_hop.map(|h| h + 1);
-                        (s, sender.highest_seed, hop)
-                    };
-                    upsert_address_reputation(
-                        conn,
-                        &edge.to_address,
-                        &contribution,
-                        &highest_seed,
-                        hop,
-                        edge.transaction_version,
-                        edge.transaction_timestamp,
-                    )
-                    .await?;
+                if !propagate_evm {
+                    return Ok::<(), BoxErr>(());
+                }
 
-                    // EVM-source rollup propagation (address_evm_sources).
-                    if !propagate_evm {
-                        continue;
-                    }
+                for edge in &edges {
                     let Some(asset) = edge.asset_type.as_deref() else {
                         continue;
                     };
                     let ord = seen_ord(edge.transaction_version, edge.event_index);
                     if edge.is_bridge_inflow {
-                        // Seed the recipient with the direct EVM source (if known).
                         let evm = inflows
                             .iter()
                             .find(|bi| {
@@ -171,9 +140,6 @@ impl Processable for AddressReputationStorer {
                             .await?;
                         }
                     } else {
-                        // Non-bridge transfer: distribute `amount` across the
-                        // sender's existing EVM sources proportional to their
-                        // current `evm_fund` share. Sender rows are not touched.
                         propagate_evm_sources(
                             conn,
                             &edge.from_address,
@@ -221,109 +187,6 @@ impl NamedStep for AddressReputationStorer {
     fn name(&self) -> String {
         "AddressReputationStorer".to_string()
     }
-}
-
-struct SenderState {
-    score: BigDecimal,
-    highest_seed: BigDecimal,
-    nearest_seed_hop: Option<i32>,
-}
-
-async fn lookup_score(
-    conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
-    addr: &str,
-) -> SenderState {
-    use schema::address_reputation::dsl::*;
-    let row: Option<(BigDecimal, BigDecimal, Option<i32>)> = address_reputation
-        .filter(address.eq(addr))
-        .select((score, highest_seed, nearest_seed_hop))
-        .first::<(BigDecimal, BigDecimal, Option<i32>)>(conn)
-        .await
-        .optional()
-        .unwrap_or(None);
-    match row {
-        Some((s, hs, hop)) => SenderState {
-            score: s,
-            highest_seed: hs,
-            nearest_seed_hop: hop,
-        },
-        None => SenderState {
-            score: BigDecimal::zero(),
-            highest_seed: BigDecimal::zero(),
-            nearest_seed_hop: None,
-        },
-    }
-}
-
-async fn lookup_bridge_seed(
-    conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
-    inflows_in_batch: &[BridgeInflow],
-    edge: &TransferEdge,
-) -> BigDecimal {
-    // Find the bridge_inflow row this edge was tagged with.
-    let evm_source = inflows_in_batch.iter().find(|bi| {
-        bi.transaction_version == edge.transaction_version
-            && bi.aptos_recipient == edge.to_address
-            && bi.amount == edge.amount
-    });
-    let evm = match evm_source.and_then(|bi| bi.evm_source.clone()) {
-        Some(e) => e,
-        None => return BigDecimal::zero(),
-    };
-
-    use schema::evm_address_risk_scores::dsl::*;
-    evm_address_risk_scores
-        .filter(evm_address.eq(&evm))
-        .select(risk_score)
-        .first::<BigDecimal>(conn)
-        .await
-        .optional()
-        .unwrap_or(None)
-        .unwrap_or_else(BigDecimal::zero)
-}
-
-async fn upsert_address_reputation(
-    conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
-    address: &str,
-    contribution: &BigDecimal,
-    candidate_highest_seed: &BigDecimal,
-    candidate_hop: Option<i32>,
-    txn_version: i64,
-    txn_ts: chrono::NaiveDateTime,
-) -> Result<(), ProcessorError> {
-    use schema::address_reputation::dsl as ar;
-    diesel::insert_into(ar::address_reputation)
-        .values((
-            ar::address.eq(address),
-            ar::score.eq(contribution),
-            ar::highest_seed.eq(candidate_highest_seed),
-            ar::nearest_seed_hop.eq(candidate_hop),
-            ar::last_updated_version.eq(txn_version),
-            ar::last_updated_timestamp.eq(txn_ts),
-        ))
-        .on_conflict(ar::address)
-        .do_update()
-        .set((
-            ar::score.eq(sql::<Numeric>(
-                "GREATEST(address_reputation.score, EXCLUDED.score)",
-            )),
-            ar::highest_seed.eq(sql::<Numeric>(
-                "GREATEST(address_reputation.highest_seed, EXCLUDED.highest_seed)",
-            )),
-            ar::nearest_seed_hop.eq(sql::<diesel::sql_types::Nullable<diesel::sql_types::Int4>>(
-                "LEAST(COALESCE(address_reputation.nearest_seed_hop, EXCLUDED.nearest_seed_hop), \
-                 COALESCE(EXCLUDED.nearest_seed_hop, address_reputation.nearest_seed_hop))",
-            )),
-            ar::last_updated_version.eq(txn_version),
-            ar::last_updated_timestamp.eq(txn_ts),
-        ))
-        .execute(conn)
-        .await
-        .map_err(|e| ProcessorError::DBStoreError {
-            message: format!("Failed to upsert address_reputation for {address}: {e:?}"),
-            query: None,
-        })?;
-    Ok(())
 }
 
 /// Insert / update a single (recipient, asset, evm) row for a direct bridge inflow.

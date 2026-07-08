@@ -77,7 +77,6 @@ async fn read_rows(
 fn config() -> AddressReputationConfig {
     AddressReputationConfig {
         channel_size: 10,
-        decay: 0.8,
         bridges: Vec::new(),
         propagate_evm_sources: true,
     }
