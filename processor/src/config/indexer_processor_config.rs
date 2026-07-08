@@ -20,6 +20,7 @@ use crate::{
     processors::{
         account_restoration::account_restoration_processor::AccountRestorationProcessor,
         account_transactions::account_transactions_processor::AccountTransactionsProcessor,
+        address_reputation::address_reputation_processor::AddressReputationProcessor,
         ans::ans_processor::AnsProcessor, default::default_processor::DefaultProcessor,
         events::events_processor::EventsProcessor,
         fungible_asset::fungible_asset_processor::FungibleAssetProcessor,
@@ -56,6 +57,10 @@ impl RunnableConfig for IndexerProcessorConfig {
             ProcessorConfig::AccountTransactionsProcessor(_) => {
                 let acc_txns_processor = AccountTransactionsProcessor::new(self.clone()).await?;
                 acc_txns_processor.run_processor().await
+            },
+            ProcessorConfig::AddressReputationProcessor(_) => {
+                let addr_rep_processor = AddressReputationProcessor::new(self.clone()).await?;
+                addr_rep_processor.run_processor().await
             },
             ProcessorConfig::AnsProcessor(_) => {
                 let ans_processor = AnsProcessor::new(self.clone()).await?;

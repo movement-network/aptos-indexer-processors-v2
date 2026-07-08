@@ -1,5 +1,6 @@
 pub mod account_restoration;
 pub mod account_transactions;
+pub mod address_reputation;
 pub mod ans;
 pub mod default;
 pub mod events;

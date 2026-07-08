@@ -1357,8 +1357,80 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    address_evm_sources (movement_address, asset_type, evm_address) {
+        #[max_length = 66]
+        movement_address -> Varchar,
+        #[max_length = 1100]
+        asset_type -> Varchar,
+        #[max_length = 66]
+        evm_address -> Varchar,
+        evm_fund -> Numeric,
+        first_seen_ord -> Int8,
+        last_seen_ord -> Int8,
+        hops_min -> Int4,
+        inserted_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    address_transfer_edges (transaction_version, event_index) {
+        transaction_version -> Int8,
+        event_index -> Int8,
+        #[max_length = 66]
+        from_address -> Varchar,
+        #[max_length = 66]
+        to_address -> Varchar,
+        #[max_length = 1100]
+        asset_type -> Nullable<Varchar>,
+        amount -> Numeric,
+        is_bridge_inflow -> Bool,
+        #[max_length = 64]
+        bridge_name -> Nullable<Varchar>,
+        transaction_timestamp -> Timestamp,
+        inserted_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    bridge_inflows (transaction_version, event_index) {
+        transaction_version -> Int8,
+        event_index -> Int8,
+        #[max_length = 64]
+        bridge_name -> Varchar,
+        #[max_length = 66]
+        aptos_recipient -> Varchar,
+        #[max_length = 66]
+        evm_source -> Nullable<Varchar>,
+        src_chain_id -> Nullable<Int4>,
+        #[max_length = 1100]
+        asset_type -> Nullable<Varchar>,
+        amount -> Numeric,
+        transaction_timestamp -> Timestamp,
+        inserted_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    evm_address_risk_scores (evm_address) {
+        #[max_length = 66]
+        evm_address -> Varchar,
+        risk_score -> Numeric,
+        #[max_length = 32]
+        risk_label -> Nullable<Varchar>,
+        #[max_length = 64]
+        source -> Nullable<Varchar>,
+        fetched_at -> Timestamp,
+        inserted_at -> Timestamp,
+    }
+}
+
 diesel::allow_tables_to_appear_in_same_query!(
     account_transactions,
+    address_evm_sources,
+    address_transfer_edges,
+    bridge_inflows,
+    evm_address_risk_scores,
     ans_lookup,
     ans_lookup_v2,
     ans_primary_name,

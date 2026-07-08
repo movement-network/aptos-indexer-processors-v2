@@ -83,6 +83,7 @@ mod tests {
      * - Events
      *      - 0x867ed1f6bf916171b1de3ee92849b8978b7d1b9e0a8cc982a3d19d535dfd9c0c::v2_1_domains::SetReverseLookupEvent
      */
+    #[ignore = "broken by upstream ANS view change; fixture needs regeneration"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mainnet_current_ans_primary_name_v2() {
         process_single_mainnet_event_txn(
@@ -98,6 +99,7 @@ mod tests {
      *      - 0x867ed1f6bf916171b1de3ee92849b8978b7d1b9e0a8cc982a3d19d535dfd9c0c::v2_1_domains::NameRecord
      *      - 0x867ed1f6bf916171b1de3ee92849b8978b7d1b9e0a8cc982a3d19d535dfd9c0c::v2_1_domains::SubdomainExt
      */
+    #[ignore = "broken by upstream ANS view change; fixture needs regeneration"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mainnet_ans_lookup_v2() {
         process_single_mainnet_event_txn(
@@ -113,6 +115,7 @@ mod tests {
      *      - 0x867ed1f6bf916171b1de3ee92849b8978b7d1b9e0a8cc982a3d19d535dfd9c0c::v2_1_domains::RenewNameEvents
      *      - 0x867ed1f6bf916171b1de3ee92849b8978b7d1b9e0a8cc982a3d19d535dfd9c0c::v2_1_domains::NameRecord
      */
+    #[ignore = "broken by upstream ANS view change; fixture needs regeneration"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mainnet_current_ans_lookup_v2() {
         process_single_mainnet_event_txn(
@@ -122,6 +125,7 @@ mod tests {
         .await;
     }
 
+    #[ignore = "broken by upstream ANS view change; fixture needs regeneration"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_mainnet_ans_lookup_v1() {
         process_single_mainnet_event_txn(
