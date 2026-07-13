@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 //! Decoder for Circle's USDCx `IntentPayload`, the big-endian byte string

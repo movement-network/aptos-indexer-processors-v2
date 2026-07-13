@@ -44,7 +44,8 @@ server_config:
         recipient_field_path: to_address
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
-        evm_source_field_path: null   # OftReceived only carries `guid`, not the EVM sender
+        evm_source_field_path: null   # not in OftReceived; recovered from lz_receive message arg when compose is set
+        payload_kind: layerzero_oft   # extracts EVM sender from OFT message compose prefix (bytes 40-71)
         enabled: false
 
       - name: layerzero_usdt_e
@@ -54,6 +55,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null
+        payload_kind: layerzero_oft
         enabled: true
 
       - name: layerzero_usdc_e
@@ -63,6 +65,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null
+        payload_kind: layerzero_oft
         enabled: true
 
       # Dormant USDC.e variant: module is published but no inbound OftReceived
@@ -75,6 +78,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null
+        payload_kind: layerzero_oft
         enabled: false
 
       # SendOftDemo (SOD) is a LayerZero test/demo OFT, not a stable. Disabled.
@@ -85,6 +89,7 @@ server_config:
         amount_field_path: amount_received_ld
         chain_id_field_path: src_eid
         evm_source_field_path: null
+        payload_kind: layerzero_oft
         enabled: false
 
   transaction_stream_config:

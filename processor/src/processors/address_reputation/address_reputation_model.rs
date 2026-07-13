@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 #![allow(clippy::extra_unused_lifetimes)]
@@ -33,6 +33,10 @@ pub struct BridgeInflow {
     pub src_chain_id: Option<i32>,
     pub asset_type: Option<String>,
     pub amount: BigDecimal,
+    /// LayerZero message GUID (0x-prefixed 32-byte hash). Present only for LZ
+    /// bridges; NULL for Circle USDCx and any non-LZ protocol. Joins to the
+    /// Ethereum-side `OFTSent` event to recover the human EVM depositor address.
+    pub lz_guid: Option<String>,
     pub transaction_timestamp: chrono::NaiveDateTime,
 }
 
