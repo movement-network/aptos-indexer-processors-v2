@@ -201,14 +201,14 @@ pub async fn upsert_bridge_seed(
 ) -> Result<(), ProcessorError> {
     let sql_str = "\
         INSERT INTO address_evm_sources \
-            (movement_address, asset_type, evm_address, evm_fund, \
+            (movement_address, asset_type, evm_address, evm_fund, transfer_fund, \
              first_seen_ord, last_seen_ord, hops_min) \
-        VALUES ($1, $2, $3, $4, $5, $5, 0) \
+        VALUES ($1, $2, $3, $4, 0, $5, $5, 0) \
         ON CONFLICT (movement_address, asset_type, evm_address) DO UPDATE SET \
-            evm_fund      = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
+            evm_fund       = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
-            last_seen_ord = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min      = 0";
+            last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
+            hops_min       = 0";
     sql_query(sql_str)
         .bind::<Varchar, _>(recipient)
         .bind::<Varchar, _>(asset)
@@ -244,18 +244,19 @@ async fn propagate_evm_sources(
         ), \
         total AS (SELECT SUM(evm_fund) AS t FROM src) \
         INSERT INTO address_evm_sources \
-            (movement_address, asset_type, evm_address, evm_fund, \
+            (movement_address, asset_type, evm_address, evm_fund, transfer_fund, \
              first_seen_ord, last_seen_ord, hops_min) \
         SELECT $3, $2, s.evm_address, \
-               (s.evm_fund * $4) / total.t, \
+               0, \
+               ($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), \
                $5, $5, s.hops_min + 1 \
           FROM src s CROSS JOIN total \
          WHERE total.t IS NOT NULL AND total.t > 0 \
         ON CONFLICT (movement_address, asset_type, evm_address) DO UPDATE SET \
-            evm_fund      = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
+            transfer_fund  = address_evm_sources.transfer_fund + EXCLUDED.transfer_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
-            last_seen_ord = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min      = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min)";
+            last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
+            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min)";
     sql_query(sql_str)
         .bind::<Text, _>(from_addr)
         .bind::<Varchar, _>(asset)

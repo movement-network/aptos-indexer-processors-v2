@@ -1,0 +1,2 @@
+ALTER TABLE address_evm_sources
+    ADD COLUMN IF NOT EXISTS transfer_fund NUMERIC NOT NULL DEFAULT 0;
