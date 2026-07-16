@@ -193,7 +193,9 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
         "A should hold M evm sources after seeding"
     );
     assert!(a_rows.iter().all(|r| r.hops_min == 0));
-    assert!(a_rows.iter().all(|r| r.transfer_fund == BigDecimal::from(0)));
+    assert!(a_rows
+        .iter()
+        .all(|r| r.transfer_fund == BigDecimal::from(0)));
 
     // 2) One A -> B transfer of `transfer_amt`. B should get M rows, each with
     // evm_fund = transfer_amt * (A's evm_fund for that E) / sum(A's evm_fund),
@@ -217,7 +219,11 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
     );
     for r in &b_rows {
         assert_eq!(r.hops_min, 1, "downstream hop should be exactly 1");
-        assert_eq!(r.evm_fund, BigDecimal::from(0), "B has no direct bridge inflow");
+        assert_eq!(
+            r.evm_fund,
+            BigDecimal::from(0),
+            "B has no direct bridge inflow"
+        );
     }
 
     // A's sources all have hops_min=0, so discount factor = 1/(0+1) = 1.
@@ -329,23 +335,47 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
             .iter()
             .find(|r| r.evm_address == evm(i))
             .unwrap_or_else(|| panic!("missing E{i}"));
-        assert_eq!(row.evm_fund, BigDecimal::from(0), "new source E{i} evm_fund must be 0");
-        assert_eq!(row.transfer_fund, BigDecimal::from(100), "new source E{i} transfer_fund");
+        assert_eq!(
+            row.evm_fund,
+            BigDecimal::from(0),
+            "new source E{i} evm_fund must be 0"
+        );
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(100),
+            "new source E{i} transfer_fund"
+        );
         assert_eq!(row.hops_min, 1, "new source E{i} hop");
     }
     // Overlapping sources E4, E5: evm_fund=50 (direct bridge, unchanged),
     // transfer_fund=0+100=100 (from A→B), hops_min=LEAST(0,1)=0.
     for i in 4..=5 {
         let row = b_after.iter().find(|r| r.evm_address == evm(i)).unwrap();
-        assert_eq!(row.evm_fund, BigDecimal::from(50), "overlap E{i} evm_fund unchanged");
-        assert_eq!(row.transfer_fund, BigDecimal::from(100), "overlap E{i} transfer_fund");
+        assert_eq!(
+            row.evm_fund,
+            BigDecimal::from(50),
+            "overlap E{i} evm_fund unchanged"
+        );
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(100),
+            "overlap E{i} transfer_fund"
+        );
         assert_eq!(row.hops_min, 0, "overlap E{i} keeps direct-seed hop");
     }
     // Non-overlapping prior sources E6..E8: unchanged — A has no contribution from them.
     for i in 6..=8 {
         let row = b_after.iter().find(|r| r.evm_address == evm(i)).unwrap();
-        assert_eq!(row.evm_fund, BigDecimal::from(50), "prior-only E{i} evm_fund unchanged");
-        assert_eq!(row.transfer_fund, BigDecimal::from(0), "prior-only E{i} transfer_fund unchanged");
+        assert_eq!(
+            row.evm_fund,
+            BigDecimal::from(50),
+            "prior-only E{i} evm_fund unchanged"
+        );
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(0),
+            "prior-only E{i} transfer_fund unchanged"
+        );
         assert_eq!(row.hops_min, 0, "prior-only E{i} hop unchanged");
     }
 
