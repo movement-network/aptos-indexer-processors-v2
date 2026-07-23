@@ -58,6 +58,8 @@ struct EvmRow {
     evm_address: String,
     #[diesel(sql_type = diesel::sql_types::Numeric)]
     evm_fund: BigDecimal,
+    #[diesel(sql_type = diesel::sql_types::Numeric)]
+    transfer_fund: BigDecimal,
     #[diesel(sql_type = diesel::sql_types::Int4)]
     hops_min: i32,
 }
@@ -67,7 +69,7 @@ async fn read_rows(
     addr: &str,
 ) -> Vec<EvmRow> {
     let mut conn = pool.get().await.unwrap();
-    sql_query("SELECT evm_address, evm_fund, hops_min FROM address_evm_sources WHERE movement_address = $1 ORDER BY evm_address")
+    sql_query("SELECT evm_address, evm_fund, transfer_fund, hops_min FROM address_evm_sources WHERE movement_address = $1 ORDER BY evm_address")
         .bind::<Text, _>(addr)
         .get_results::<EvmRow>(&mut conn)
         .await
@@ -183,7 +185,7 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
         .expect("seed batch")
         .expect("seed output");
 
-    // Sanity: A has M rows, all at hop 0.
+    // Sanity: A has M rows, all at hop 0 with evm_fund set and transfer_fund=0.
     let a_rows = read_rows(&pool, A_ADDR).await;
     assert_eq!(
         a_rows.len(),
@@ -191,6 +193,9 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
         "A should hold M evm sources after seeding"
     );
     assert!(a_rows.iter().all(|r| r.hops_min == 0));
+    assert!(a_rows
+        .iter()
+        .all(|r| r.transfer_fund == BigDecimal::from(0)));
 
     // 2) One A -> B transfer of `transfer_amt`. B should get M rows, each with
     // evm_fund = transfer_amt * (A's evm_fund for that E) / sum(A's evm_fund),
@@ -214,35 +219,39 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
     );
     for r in &b_rows {
         assert_eq!(r.hops_min, 1, "downstream hop should be exactly 1");
+        assert_eq!(
+            r.evm_fund,
+            BigDecimal::from(0),
+            "B has no direct bridge inflow"
+        );
     }
 
-    // Sum of B's evm_fund should equal transfer_amt (proportional distribution
-    // preserves the total). Allow for BigDecimal exact arithmetic since
-    // amounts and shares are integer-friendly here.
+    // A's sources all have hops_min=0, so discount factor = 1/(0+1) = 1.
+    // Sum of B's transfer_fund equals transfer_amt * sum(evm_fund_i/total * 1) = transfer_amt.
     let total_b: BigDecimal = b_rows
         .iter()
-        .fold(BigDecimal::from(0), |acc, r| acc + &r.evm_fund);
+        .fold(BigDecimal::from(0), |acc, r| acc + &r.transfer_fund);
     let expected = BigDecimal::from(transfer_amt);
-    assert_eq!(
-        total_b, expected,
-        "sum(evm_fund on B) must equal transfer amount"
+    let diff = (&total_b - &expected).abs();
+    assert!(
+        diff < BigDecimal::from_str("0.000001").unwrap(),
+        "sum(transfer_fund on B) must equal transfer amount; got {total_b}, expected {expected}"
     );
 
-    // Spot-check one share: E0 seeded 100 out of 1500, so B[E0] = 700 * 100 / 1500.
+    // Spot-check: E0 seeded 100 out of 1500, hops_min=0 → discount=1.
+    // B[E0].transfer_fund = 700 * 100/1500 * 1 = 700*100/1500.
     let e0 = evm(0);
     let e0_row = b_rows
         .iter()
         .find(|r| r.evm_address == e0)
         .expect("E0 present");
-    // Postgres NUMERIC division may produce a specific scale; compare via
-    // |e0 - 700*100/1500| < epsilon rather than exact string equality.
     let target =
         BigDecimal::from(transfer_amt) * BigDecimal::from(100) / BigDecimal::from(seed_total);
-    let diff = (&e0_row.evm_fund - &target).abs();
+    let diff = (&e0_row.transfer_fund - &target).abs();
     assert!(
         diff < BigDecimal::from_str("0.000001").unwrap(),
-        "E0 share off: got {}, expected ~{}, diff={}",
-        e0_row.evm_fund,
+        "E0 transfer_fund off: got {}, expected ~{}, diff={}",
+        e0_row.transfer_fund,
         target,
         diff
     );
@@ -296,12 +305,7 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
 
     let b_before = read_rows(&pool, B_ADDR).await;
     assert_eq!(b_before.len(), 5);
-    let get = |rows: &[EvmRow], e: &str| {
-        rows.iter()
-            .find(|r| r.evm_address == e)
-            .cloned()
-            .map(|r| (r.evm_fund, r.hops_min))
-    };
+    let _get = |rows: &[EvmRow], e: &str| rows.iter().find(|r| r.evm_address == e).cloned();
 
     // Now A -> B, amount 500 (== A's total funding). Then each of E1..E5 sends
     // its full share (100) into B.
@@ -322,34 +326,63 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
         "B should hold union of {{E1..E5}} + {{E4..E8}} = 8"
     );
 
-    // New sources on B: E1, E2, E3 -- fund = 100, hop = 1.
+    // A total evm_fund = 500 (5 sources × 100), all hops_min=0, discount=1.
+    // Each E in A contributes 500/500 * 100 * 1 = 100 to transfer_fund on B.
+
+    // New sources on B from the transfer: E1, E2, E3 — evm_fund=0, transfer_fund=100, hop=1.
     for i in 1..=3 {
-        let (fund, hop) = get(&b_after, &evm(i)).unwrap_or_else(|| panic!("missing E{i}"));
-        assert_eq!(fund, BigDecimal::from(100), "new source E{i} evm_fund");
-        assert_eq!(hop, 1, "new source E{i} hop");
-    }
-    // Overlapping sources E4, E5: fund = 50 (prior direct) + 100 (from A) = 150,
-    // hop = LEAST(0, 1) = 0 (their direct-seed hop wins).
-    for i in 4..=5 {
-        let (fund, hop) = get(&b_after, &evm(i)).unwrap();
-        assert_eq!(fund, BigDecimal::from(150), "overlap E{i} evm_fund");
-        assert_eq!(hop, 0, "overlap E{i} keeps direct-seed hop");
-    }
-    // Non-overlapping prior sources E6..E8: unchanged.
-    for i in 6..=8 {
-        let (fund, hop) = get(&b_after, &evm(i)).unwrap();
+        let row = b_after
+            .iter()
+            .find(|r| r.evm_address == evm(i))
+            .unwrap_or_else(|| panic!("missing E{i}"));
         assert_eq!(
-            fund,
+            row.evm_fund,
+            BigDecimal::from(0),
+            "new source E{i} evm_fund must be 0"
+        );
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(100),
+            "new source E{i} transfer_fund"
+        );
+        assert_eq!(row.hops_min, 1, "new source E{i} hop");
+    }
+    // Overlapping sources E4, E5: evm_fund=50 (direct bridge, unchanged),
+    // transfer_fund=0+100=100 (from A→B), hops_min=LEAST(0,1)=0.
+    for i in 4..=5 {
+        let row = b_after.iter().find(|r| r.evm_address == evm(i)).unwrap();
+        assert_eq!(
+            row.evm_fund,
+            BigDecimal::from(50),
+            "overlap E{i} evm_fund unchanged"
+        );
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(100),
+            "overlap E{i} transfer_fund"
+        );
+        assert_eq!(row.hops_min, 0, "overlap E{i} keeps direct-seed hop");
+    }
+    // Non-overlapping prior sources E6..E8: unchanged — A has no contribution from them.
+    for i in 6..=8 {
+        let row = b_after.iter().find(|r| r.evm_address == evm(i)).unwrap();
+        assert_eq!(
+            row.evm_fund,
             BigDecimal::from(50),
             "prior-only E{i} evm_fund unchanged"
         );
-        assert_eq!(hop, 0, "prior-only E{i} hop unchanged");
+        assert_eq!(
+            row.transfer_fund,
+            BigDecimal::from(0),
+            "prior-only E{i} transfer_fund unchanged"
+        );
+        assert_eq!(row.hops_min, 0, "prior-only E{i} hop unchanged");
     }
 
     // A must remain unchanged.
     let a_after = read_rows(&pool, A_ADDR).await;
     assert_eq!(a_after.len(), 5);
-    assert!(a_after
-        .iter()
-        .all(|r| r.hops_min == 0 && r.evm_fund == BigDecimal::from(100)));
+    assert!(a_after.iter().all(|r| r.hops_min == 0
+        && r.evm_fund == BigDecimal::from(100)
+        && r.transfer_fund == BigDecimal::from(0)));
 }

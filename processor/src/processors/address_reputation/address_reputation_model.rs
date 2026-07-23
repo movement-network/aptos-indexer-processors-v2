@@ -40,10 +40,16 @@ pub struct BridgeInflow {
     pub transaction_timestamp: chrono::NaiveDateTime,
 }
 
-/// One row per (movement_address, asset_type, evm_address). `evm_fund` is
-/// monotonically non-decreasing and represents cumulative attributed inflow of
-/// the asset that traces back to the EVM address (across all hops so far).
-/// See migration 2026-07-02-000000_address_evm_sources for full semantics.
+/// One row per (movement_address, asset_type, evm_address).
+///
+/// - `evm_fund`: cumulative amount deposited directly via bridge inflows from
+///   this EVM address to this Movement address. Updated only on bridge inflows;
+///   never touched by transfers.
+/// - `transfer_fund`: cumulative weighted attribution received through Movement
+///   transfers. For a transfer A→B of amount C, each EVM source E of A
+///   contributes `C / total_A_evm_fund * E_A.evm_fund * (1 / (E_A.hops_min + 1))`
+///   to B's `transfer_fund` for E. Updated only on transfers; never touched by
+///   bridge inflows.
 #[derive(Clone, Debug, Deserialize, FieldCount, Insertable, Queryable, Serialize)]
 #[diesel(table_name = address_evm_sources)]
 pub struct AddressEvmSource {
@@ -51,6 +57,7 @@ pub struct AddressEvmSource {
     pub asset_type: String,
     pub evm_address: String,
     pub evm_fund: BigDecimal,
+    pub transfer_fund: BigDecimal,
     pub first_seen_ord: i64,
     pub last_seen_ord: i64,
     pub hops_min: i32,

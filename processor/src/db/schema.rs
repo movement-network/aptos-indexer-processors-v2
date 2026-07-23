@@ -1366,6 +1366,7 @@ diesel::table! {
         #[max_length = 66]
         evm_address -> Varchar,
         evm_fund -> Numeric,
+        transfer_fund -> Numeric,
         first_seen_ord -> Int8,
         last_seen_ord -> Int8,
         hops_min -> Int4,
