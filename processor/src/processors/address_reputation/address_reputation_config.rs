@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,48 @@ pub struct AddressReputationConfig {
     /// is needed.
     #[serde(default = "AddressReputationConfig::default_propagate_evm_sources")]
     pub propagate_evm_sources: bool,
+    /// Background loop that resolves LayerZero GUIDs → EVM depositor addresses.
+    #[serde(default)]
+    pub lz_enricher: LzEnricherConfig,
+}
+
+/// Configuration for the background LZ GUID → EVM enrichment loop.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LzEnricherConfig {
+    /// Enable or disable the enricher. Defaults to true.
+    #[serde(default = "LzEnricherConfig::default_enabled")]
+    pub enabled: bool,
+    /// Milliseconds between consecutive LZ Scan API requests. Defaults to 500 (2 req/s).
+    #[serde(default = "LzEnricherConfig::default_interval_ms")]
+    pub interval_ms: u64,
+    /// Number of retry attempts per GUID on transient failure. Defaults to 3.
+    #[serde(default = "LzEnricherConfig::default_max_retries")]
+    pub max_retries: u32,
+}
+
+impl LzEnricherConfig {
+    const fn default_enabled() -> bool {
+        true
+    }
+
+    const fn default_interval_ms() -> u64 {
+        500
+    }
+
+    const fn default_max_retries() -> u32 {
+        3
+    }
+}
+
+impl Default for LzEnricherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            interval_ms: Self::default_interval_ms(),
+            max_retries: Self::default_max_retries(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -78,6 +120,7 @@ impl Default for AddressReputationConfig {
             channel_size: Self::default_channel_size(),
             bridges: Vec::new(),
             propagate_evm_sources: Self::default_propagate_evm_sources(),
+            lz_enricher: LzEnricherConfig::default(),
         }
     }
 }

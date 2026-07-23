@@ -1406,6 +1406,8 @@ diesel::table! {
         #[max_length = 1100]
         asset_type -> Nullable<Varchar>,
         amount -> Numeric,
+        #[max_length = 66]
+        lz_guid -> Nullable<Varchar>,
         transaction_timestamp -> Timestamp,
         inserted_at -> Timestamp,
     }

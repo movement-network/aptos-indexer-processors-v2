@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -6,7 +6,7 @@ use crate::{
     processors::{
         address_reputation::{
             address_reputation_model::{BridgeInflow, BridgeRegistryEntry, TransferEdge},
-            intent_payload,
+            intent_payload, lz_payload,
         },
         objects::v2_object_utils::ObjectWithMetadata,
     },
@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use serde_json::Value;
 use std::{str::FromStr, sync::Arc};
+use tokio::sync::mpsc::UnboundedSender;
 
 // P0 scope: only FA v2 events. Coin v1 (`0x1::coin::WithdrawEvent`/`DepositEvent`)
 // is intentionally skipped because it includes gas-fee Withdraw/Deposit pairs that
@@ -38,11 +39,20 @@ pub type BridgeRegistry = Arc<Vec<BridgeRegistryEntry>>;
 
 pub struct AddressReputationExtractor {
     pub bridge_registry: BridgeRegistry,
+    /// Sends newly extracted LZ GUIDs to the background enricher loop.
+    /// None when the enricher is disabled in config.
+    pub guid_sender: Option<UnboundedSender<String>>,
 }
 
 impl AddressReputationExtractor {
-    pub fn new(bridge_registry: BridgeRegistry) -> Self {
-        Self { bridge_registry }
+    pub fn new(
+        bridge_registry: BridgeRegistry,
+        guid_sender: Option<UnboundedSender<String>>,
+    ) -> Self {
+        Self {
+            bridge_registry,
+            guid_sender,
+        }
     }
 }
 
@@ -135,12 +145,21 @@ impl Processable for AddressReputationExtractor {
                         event_index,
                         block_timestamp,
                     ) {
-                        // Fall back to the transaction's entry-function payload when
-                        // the event itself doesn't carry the EVM depositor (Circle
-                        // USDCx puts it in the IntentPayload arg, not the Mint event).
+                        // Fall back to the transaction's payload when the event
+                        // itself doesn't carry EVM-side data.
+                        let kind = entry.payload_kind.as_deref();
                         if inflow.evm_source.is_none() {
-                            inflow.evm_source =
-                                decode_payload_evm_source(txn, entry.payload_kind.as_deref());
+                            inflow.evm_source = decode_payload_evm_source(txn, kind);
+                        }
+                        if inflow.lz_guid.is_none() {
+                            inflow.lz_guid = extract_payload_guid(txn, kind);
+                        }
+                        // Forward new GUIDs to the background enricher so it can
+                        // resolve the EVM depositor address via the LZ Scan API.
+                        if let (Some(guid), Some(sender)) =
+                            (inflow.lz_guid.as_ref(), self.guid_sender.as_ref())
+                        {
+                            let _ = sender.send(guid.clone());
                         }
                         txn_inflows.push(inflow);
                         continue;
@@ -305,9 +324,13 @@ fn json_field(data: &Value, path: &str) -> Option<String> {
 }
 
 /// Dispatches to a named payload decoder to recover the EVM source address
-/// from the transaction's entry-function arguments. Returns `None` when the
-/// payload kind isn't recognized, the txn isn't an entry-function call, or the
-/// decoder can't find a well-formed address.
+/// from the transaction's payload arguments. Returns `None` when the payload
+/// kind isn't recognized, the txn has no user payload, or the decoder can't
+/// find a well-formed address.
+///
+/// Both `EntryFunctionPayload` (Circle USDCx `mint`) and `ScriptPayload`
+/// (LayerZero executor scripts) are supported — arguments are encoded
+/// identically in both payload types.
 fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<String> {
     let kind = kind?;
     let user = match txn.txn_data.as_ref()? {
@@ -315,8 +338,10 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         _ => return None,
     };
     let payload = user.request.as_ref()?.payload.as_ref()?.payload.as_ref()?;
-    let entry_fn = match payload {
-        PayloadType::EntryFunctionPayload(ef) => ef,
+    // Extract arguments from whichever payload type is present.
+    let args: &[String] = match payload {
+        PayloadType::EntryFunctionPayload(ef) => &ef.arguments,
+        PayloadType::ScriptPayload(sp) => &sp.arguments,
         _ => return None,
     };
     match kind {
@@ -324,12 +349,40 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         // is arg[0], a big-endian IntentPayload whose `local_depositor` is the
         // EVM address that called `depositForBurn` on the source chain.
         "circle_intent" => {
-            let arg = entry_fn.arguments.first()?;
+            let arg = args.first()?;
             let bytes = intent_payload::parse_hex_arg(arg)?;
             intent_payload::decode_local_depositor(&bytes)
         },
+        // LayerZero V2 OFT: when `sendParam.composeMsg` is non-empty on the
+        // Ethereum side, OFTCore prepends `addressToBytes32(msg.sender)` to the
+        // compose payload before encoding the OFT message. The resulting layout
+        // at bytes 40–71 of the `message` executor argument is the EVM address
+        // of the user who called `OFT.send()`. Returns None for standard
+        // (compose-less) transfers where the 40-byte message carries no sender.
+        // The LZ executor delivers packets via a Move script (ScriptPayload),
+        // handled by the ScriptPayload arm above.
+        "layerzero_oft" => lz_payload::scan_args_for_oft_sender(args),
         _ => None,
     }
+}
+
+/// Extract the LayerZero GUID from the transaction payload for `layerzero_oft`
+/// bridges. Returns `None` for all other payload kinds.
+fn extract_payload_guid(txn: &Transaction, kind: Option<&str>) -> Option<String> {
+    if kind? != "layerzero_oft" {
+        return None;
+    }
+    let user = match txn.txn_data.as_ref()? {
+        TxnData::User(u) => u,
+        _ => return None,
+    };
+    let payload = user.request.as_ref()?.payload.as_ref()?.payload.as_ref()?;
+    let args: &[String] = match payload {
+        PayloadType::EntryFunctionPayload(ef) => &ef.arguments,
+        PayloadType::ScriptPayload(sp) => &sp.arguments,
+        _ => return None,
+    };
+    lz_payload::extract_guid_from_args(args)
 }
 
 fn parse_bridge_event(
@@ -362,6 +415,7 @@ fn parse_bridge_event(
         src_chain_id,
         asset_type: None,
         amount,
+        lz_guid: None, // filled by the caller from the tx payload
         transaction_timestamp: block_timestamp,
     })
 }

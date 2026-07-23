@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -191,7 +191,7 @@ impl NamedStep for AddressReputationStorer {
 
 /// Insert / update a single (recipient, asset, evm) row for a direct bridge inflow.
 /// `evm_fund` accumulates; `hops_min` is pinned to 0.
-async fn upsert_bridge_seed(
+pub async fn upsert_bridge_seed(
     conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
     recipient: &str,
     asset: &str,

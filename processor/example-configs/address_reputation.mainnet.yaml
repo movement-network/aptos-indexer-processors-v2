@@ -1,6 +1,4 @@
-# Example AddressReputationProcessor config for Movement MAINNET.
-# Bridge addresses below are placeholders — fill in the real mainnet USDCx
-# deployment address and LayerZero OFT modules before running.
+# AddressReputationProcessor — Movement MAINNET deployment.
 
 processor_mode:
   type: default
@@ -11,18 +9,74 @@ server_config:
     type: address_reputation_processor
     channel_size: 10
     bridges:
-      # Circle USDCx bridge on Movement mainnet. Replace module_address with
-      # the published `circle_remote::usdcx` address (which is also the USDCx
-      # FA metadata address by Move design).
+      # --- Circle USDCx -------------------------------------------------------
+      # Replace module_address with the published `usdcx` address on mainnet
+      # (same address used as FA metadata by Move design).
       - name: circle_usdcx
         module_address: "0x0000000000000000000000000000000000000000000000000000000000000000"
         event_type: "0x0000000000000000000000000000000000000000000000000000000000000000::usdcx::Mint"
         recipient_field_path: recipient
         amount_field_path: amount
         chain_id_field_path: remote_domain
-        evm_source_field_path: null
+        evm_source_field_path: null   # not in the Mint event; recovered from IntentPayload
         payload_kind: circle_intent   # decode `local_depositor` from mint() arg[0]
-        enabled: false  # flip to true after addresses are filled in
+        enabled: false  # flip to true after module_address is confirmed on mainnet
+
+      # --- LayerZero OFTs ----------------------------------------------------
+      # EVM source extraction: when the user calls OFT.send() on Ethereum with a
+      # non-empty sendParam.composeMsg, OFTCore prepends addressToBytes32(msg.sender)
+      # at bytes 40-71 of the message argument passed to lz_receive on Movement.
+      # payload_kind: layerzero_oft decodes that field. Returns null for standard
+      # (compose-less) transfers — see lz_payload.rs for the full format.
+      - name: layerzero_lz_1
+        module_address: "0x7e4fd97ef92302eea9b10f74be1d96fb1f1511cf7ed28867b0144ca89c6ebc3c"
+        event_type: "0x7e4fd97ef92302eea9b10f74be1d96fb1f1511cf7ed28867b0144ca89c6ebc3c::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null   # not in OftReceived; recovered from lz_receive message arg
+        payload_kind: layerzero_oft
+        enabled: true
+
+      - name: layerzero_lz_2
+        module_address: "0x4d2969d384e440db9f1a51391cfc261d1ec08ee1bdf7b9711a6c05d485a4110a"
+        event_type: "0x4d2969d384e440db9f1a51391cfc261d1ec08ee1bdf7b9711a6c05d485a4110a::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        payload_kind: layerzero_oft
+        enabled: true
+
+      - name: layerzero_lz_3
+        module_address: "0x38cdb3f0afabee56a3393793940d28214cba1f5781e13d5db18fa7079f60ab55"
+        event_type: "0x38cdb3f0afabee56a3393793940d28214cba1f5781e13d5db18fa7079f60ab55::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        payload_kind: layerzero_oft
+        enabled: true
+
+      - name: layerzero_lz_4
+        module_address: "0x3dfe1ac4574c7dbbe6f1c5ba862de88fc3e7d3cf8eba95ef1abf32b582889e6d"
+        event_type: "0x3dfe1ac4574c7dbbe6f1c5ba862de88fc3e7d3cf8eba95ef1abf32b582889e6d::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        payload_kind: layerzero_oft
+        enabled: true
+
+      - name: layerzero_lz_5
+        module_address: "0xbdf86868a32dbae96f2cd50ab05b4be43b92e84e793a4fc01b5b460cc38fdc14"
+        event_type: "0xbdf86868a32dbae96f2cd50ab05b4be43b92e84e793a4fc01b5b460cc38fdc14::oft_core::OftReceived"
+        recipient_field_path: to_address
+        amount_field_path: amount_received_ld
+        chain_id_field_path: src_eid
+        evm_source_field_path: null
+        payload_kind: layerzero_oft
+        enabled: true
 
   transaction_stream_config:
     indexer_grpc_data_service_address: "https://grpc.mainnet.movementnetwork.xyz:443"

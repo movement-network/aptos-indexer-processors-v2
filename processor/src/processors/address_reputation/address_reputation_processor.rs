@@ -1,4 +1,4 @@
-// Copyright © Aptos Foundation
+// Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
             address_reputation_config::BridgeConfig,
             address_reputation_extractor::AddressReputationExtractor,
             address_reputation_model::BridgeRegistryEntry,
-            address_reputation_storer::AddressReputationStorer,
+            address_reputation_storer::AddressReputationStorer, lz_enricher::LzEnricher,
         },
         processor_status_saver::{
             get_end_version, get_starting_version, PostgresProcessorStatusSaver,
@@ -134,13 +134,33 @@ impl ProcessorTrait for AddressReputationProcessor {
             "address_reputation: loaded bridge registry from config"
         );
 
+        // Spawn the LZ GUID enricher in the background when enabled. The channel
+        // is unbounded so the extractor never blocks; rate-limiting happens on the
+        // enricher side.
+        let guid_sender = if processor_config.lz_enricher.enabled {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let enricher = LzEnricher::new(
+                self.db_pool.clone(),
+                rx,
+                processor_config.lz_enricher.interval_ms,
+                processor_config.lz_enricher.max_retries,
+                processor_config.propagate_evm_sources,
+            );
+            tokio::spawn(enricher.run());
+            info!("address_reputation: LZ enricher started");
+            Some(tx)
+        } else {
+            info!("address_reputation: LZ enricher disabled");
+            None
+        };
+
         let transaction_stream = TransactionStreamStep::new(TransactionStreamConfig {
             starting_version,
             request_ending_version: ending_version,
             ..self.config.transaction_stream_config.clone()
         })
         .await?;
-        let extractor = AddressReputationExtractor::new(registry);
+        let extractor = AddressReputationExtractor::new(registry, guid_sender);
         let storer = AddressReputationStorer::new(self.db_pool.clone(), processor_config);
         let version_tracker = VersionTrackerStep::new(
             PostgresProcessorStatusSaver::new(self.config.clone(), self.db_pool.clone()),

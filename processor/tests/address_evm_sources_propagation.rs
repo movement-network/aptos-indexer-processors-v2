@@ -79,6 +79,7 @@ fn config() -> AddressReputationConfig {
         channel_size: 10,
         bridges: Vec::new(),
         propagate_evm_sources: true,
+        lz_enricher: Default::default(),
     }
 }
 
@@ -114,6 +115,7 @@ fn seed_bridge_batch(
             src_chain_id: Some(1),
             asset_type: Some(ASSET.to_string()),
             amount: amt,
+            lz_guid: None,
             transaction_timestamp: ts(),
         };
         edges.push(e);

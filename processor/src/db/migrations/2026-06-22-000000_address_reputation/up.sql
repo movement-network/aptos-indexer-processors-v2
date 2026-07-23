@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS idx_ate_bridge ON address_transfer_edges (bridge_name
 -- This keeps mainnet/testnet/devnet deploys swappable without a SQL migration. See
 -- AddressReputationConfig.bridges in processor/src/processors/address_reputation/address_reputation_config.rs.)
 
--- Bridge deposit events on Aptos. The cross-chain EVM source is the "head" of any trace.
+-- Bridge deposit events on Movement. The cross-chain EVM source is the "head" of any trace.
 CREATE TABLE IF NOT EXISTS bridge_inflows (
     transaction_version BIGINT NOT NULL,
     event_index BIGINT NOT NULL,
