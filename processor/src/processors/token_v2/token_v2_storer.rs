@@ -6,9 +6,10 @@ use crate::{
             token_royalty::PostgresCurrentTokenRoyaltyV1,
         },
         token_v2_models::{
-            v2_collections::CurrentCollectionV2, v2_token_activities::PostgresTokenActivityV2,
-            v2_token_datas::PostgresCurrentTokenDataV2,
-            v2_token_ownerships::PostgresCurrentTokenOwnershipV2,
+            v2_collections::CurrentCollectionV2,
+            v2_token_activities::PostgresTokenActivityV2,
+            v2_token_datas::{PostgresCurrentTokenDataV2, PostgresTokenDataV2},
+            v2_token_ownerships::{PostgresCurrentTokenOwnershipV2, PostgresTokenOwnershipV2},
         },
         token_v2_processor::TokenV2ProcessorConfig,
         token_v2_processor_queries::{
@@ -16,6 +17,7 @@ use crate::{
             insert_current_deleted_token_ownerships_v2_query, insert_current_token_claims_query,
             insert_current_token_datas_v2_query, insert_current_token_ownerships_v2_query,
             insert_current_token_royalties_v1_query, insert_token_activities_v2_query,
+            insert_token_datas_v2_query, insert_token_ownerships_v2_query,
         },
     },
     utils::table_flags::{filter_data, TableFlags},
@@ -65,6 +67,8 @@ impl Processable for TokenV2Storer {
         Vec<PostgresTokenActivityV2>,
         Vec<PostgresCurrentTokenRoyaltyV1>,
         Vec<PostgresCurrentTokenPendingClaim>,
+        Vec<PostgresTokenDataV2>,
+        Vec<PostgresTokenOwnershipV2>,
     );
     type Output = ();
     type RunType = AsyncRunType;
@@ -80,6 +84,8 @@ impl Processable for TokenV2Storer {
             Vec<PostgresTokenActivityV2>,
             Vec<PostgresCurrentTokenRoyaltyV1>,
             Vec<PostgresCurrentTokenPendingClaim>,
+            Vec<PostgresTokenDataV2>,
+            Vec<PostgresTokenOwnershipV2>,
         )>,
     ) -> Result<Option<TransactionContext<Self::Output>>, ProcessorError> {
         let (
@@ -91,6 +97,8 @@ impl Processable for TokenV2Storer {
             token_activities_v2,
             current_token_royalties_v1,
             current_token_claims,
+            token_datas_v2,
+            token_ownerships_v2,
         ) = input.data;
 
         let (
@@ -102,6 +110,8 @@ impl Processable for TokenV2Storer {
             token_activities_v2,
             current_token_royalties_v1,
             current_token_claims,
+            token_datas_v2,
+            token_ownerships_v2,
         ) = filter_datasets!(self, {
             current_collections_v2 => TableFlags::CURRENT_COLLECTIONS_V2,
             current_token_datas_v2 => TableFlags::CURRENT_TOKEN_DATAS_V2,
@@ -111,6 +121,8 @@ impl Processable for TokenV2Storer {
             token_activities_v2 => TableFlags::TOKEN_ACTIVITIES_V2,
             current_token_royalties_v1 => TableFlags::CURRENT_TOKEN_ROYALTY_V1,
             current_token_claims => TableFlags::CURRENT_TOKEN_PENDING_CLAIMS,
+            token_datas_v2 => TableFlags::TOKEN_DATAS_V2,
+            token_ownerships_v2 => TableFlags::TOKEN_OWNERSHIPS_V2,
         });
 
         let per_table_chunk_sizes: AHashMap<String, usize> = self
@@ -192,6 +204,25 @@ impl Processable for TokenV2Storer {
             ),
         );
 
+        let td_v2 = execute_in_chunks(
+            self.conn_pool.clone(),
+            insert_token_datas_v2_query,
+            &token_datas_v2,
+            get_config_table_chunk_size::<PostgresTokenDataV2>(
+                "token_datas_v2",
+                &per_table_chunk_sizes,
+            ),
+        );
+        let to_v2 = execute_in_chunks(
+            self.conn_pool.clone(),
+            insert_token_ownerships_v2_query,
+            &token_ownerships_v2,
+            get_config_table_chunk_size::<PostgresTokenOwnershipV2>(
+                "token_ownerships_v2",
+                &per_table_chunk_sizes,
+            ),
+        );
+
         let (
             cc_v2_res,
             ctd_v2_res,
@@ -201,7 +232,11 @@ impl Processable for TokenV2Storer {
             ta_v2_res,
             ctr_v1_res,
             ctc_v1_res,
-        ) = tokio::join!(cc_v2, ctd_v2, cdtd_v2, cto_v2, cdto_v2, ta_v2, ctr_v1, ctc_v1);
+            td_v2_res,
+            to_v2_res,
+        ) = tokio::join!(
+            cc_v2, ctd_v2, cdtd_v2, cto_v2, cdto_v2, ta_v2, ctr_v1, ctc_v1, td_v2, to_v2
+        );
 
         for res in [
             cc_v2_res,
@@ -212,6 +247,8 @@ impl Processable for TokenV2Storer {
             ta_v2_res,
             ctr_v1_res,
             ctc_v1_res,
+            td_v2_res,
+            to_v2_res,
         ] {
             match res {
                 Ok(_) => {},

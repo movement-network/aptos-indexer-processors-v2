@@ -1,5 +1,6 @@
 use bitflags::bitflags;
 use std::collections::HashSet;
+use tracing::warn;
 
 bitflags! {
     #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -90,14 +91,52 @@ bitflags! {
 }
 
 impl TableFlags {
+    /// Tables that are NOT written unless they are named explicitly in `tables_to_write`.
+    ///
+    /// These are historical (non-current) tables holding one row per write set change, so
+    /// they grow far faster than their `current_` counterparts. Leaving them off by default
+    /// keeps existing deployments' storage profile unchanged; opt in per deployment.
+    pub const OPT_IN_ONLY: Self = Self::TOKEN_DATAS_V2
+        .union(Self::TOKEN_OWNERSHIPS_V2)
+        .union(Self::FUNGIBLE_ASSET_BALANCES);
+
+    /// Builds flags from the `tables_to_write` config entries. Names are matched
+    /// case-insensitively so configs can use natural table names (`token_datas_v2`) rather
+    /// than the uppercase flag names. Unrecognized names are skipped with a warning.
     pub fn from_set(set: &HashSet<String>) -> Self {
         let mut flags = TableFlags::empty();
         for table in set {
-            if let Some(flag) = TableFlags::from_name(table) {
-                flags |= flag;
+            match TableFlags::from_name(&table.to_uppercase()) {
+                Some(flag) => flags |= flag,
+                None => warn!(
+                    table_name = table.as_str(),
+                    "Unrecognized table name in tables_to_write, ignoring it"
+                ),
             }
         }
         flags
+    }
+
+    /// Human readable summary of what this config actually writes, for logging at startup.
+    ///
+    /// `tables_to_write` is easy to get subtly wrong -- an allowlist silently suppresses
+    /// everything it omits, and a name belonging to a different processor suppresses
+    /// everything. Emitting this once at boot makes the effective set visible instead of
+    /// leaving operators to infer it from missing rows.
+    pub fn describe_effective(&self) -> String {
+        let allowlist = self.difference(TableFlags::OPT_IN_ONLY);
+        let opted_in = self.intersection(TableFlags::OPT_IN_ONLY);
+
+        let base = if allowlist.is_empty() {
+            "all default tables for this processor".to_string()
+        } else {
+            format!("only these tables: {allowlist:?}")
+        };
+        if opted_in.is_empty() {
+            format!("{base}; no opt-in-only tables enabled")
+        } else {
+            format!("{base}; plus opt-in-only tables: {opted_in:?}")
+        }
     }
 }
 
@@ -105,13 +144,30 @@ impl TableFlags {
  * This is a helper function to filter data based on the tables_to_write set.
  * If the tables_to_write set is empty or contains the flag, return the data so that they are written to the database.
  * Otherwise, return an empty vector so that they are not written to the database.
+ *
+ * Tables in `TableFlags::OPT_IN_ONLY` invert this: they are only written when named
+ * explicitly, and naming one does not turn `tables_to_write` into an allowlist for
+ * everything else. That way opting into a historical table doesn't silently switch off
+ * every table that used to be written by default.
  */
 pub fn filter_data<T>(tables_to_write: &TableFlags, flag: TableFlags, data: Vec<T>) -> Vec<T> {
-    if tables_to_write.is_empty() || tables_to_write.contains(flag) {
+    if should_write(tables_to_write, flag) {
         data
     } else {
         vec![]
     }
+}
+
+/// Whether `flag`'s table is written under this config. Extractors use this to skip building
+/// rows they know the storer would discard; `filter_data` uses it to do the discarding.
+pub fn should_write(tables_to_write: &TableFlags, flag: TableFlags) -> bool {
+    if TableFlags::OPT_IN_ONLY.contains(flag) {
+        return tables_to_write.contains(flag);
+    }
+
+    // Opt-in names don't count towards "did the operator specify an allowlist?".
+    let allowlist = tables_to_write.difference(TableFlags::OPT_IN_ONLY);
+    allowlist.is_empty() || allowlist.contains(flag)
 }
 
 /// Macro to filter multiple data sets with their corresponding table flags in one go
@@ -124,4 +180,85 @@ macro_rules! filter_datasets {
             )*
         )
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn from_set_accepts_lowercase_table_names() {
+        assert_eq!(
+            TableFlags::from_set(&set(&["token_datas_v2", "CURRENT_OBJECTS"])),
+            TableFlags::TOKEN_DATAS_V2 | TableFlags::CURRENT_OBJECTS
+        );
+    }
+
+    #[test]
+    fn from_set_ignores_unknown_names() {
+        assert_eq!(
+            TableFlags::from_set(&set(&["not_a_real_table"])),
+            TableFlags::empty()
+        );
+    }
+
+    #[test]
+    fn empty_config_writes_default_tables_but_not_opt_in_ones() {
+        let flags = TableFlags::empty();
+        assert_eq!(
+            filter_data(&flags, TableFlags::CURRENT_TOKEN_DATAS_V2, vec![1]),
+            vec![1]
+        );
+        assert!(filter_data(&flags, TableFlags::TOKEN_DATAS_V2, vec![1]).is_empty());
+        assert!(filter_data(&flags, TableFlags::FUNGIBLE_ASSET_BALANCES, vec![1]).is_empty());
+    }
+
+    #[test]
+    fn opting_into_a_historical_table_keeps_other_defaults_on() {
+        let flags = TableFlags::from_set(&set(&["token_datas_v2"]));
+        assert_eq!(
+            filter_data(&flags, TableFlags::TOKEN_DATAS_V2, vec![1]),
+            vec![1]
+        );
+        // Not named, but still written because no non-opt-in allowlist was given.
+        assert_eq!(
+            filter_data(&flags, TableFlags::CURRENT_TOKEN_DATAS_V2, vec![1]),
+            vec![1]
+        );
+        // A sibling opt-in table stays off.
+        assert!(filter_data(&flags, TableFlags::TOKEN_OWNERSHIPS_V2, vec![1]).is_empty());
+    }
+
+    #[test]
+    fn describe_effective_distinguishes_default_allowlist_and_opt_in() {
+        let default = TableFlags::empty().describe_effective();
+        assert!(default.contains("all default tables"), "{default}");
+        assert!(default.contains("no opt-in-only"), "{default}");
+
+        let opted_in = TableFlags::from_set(&set(&["token_datas_v2"])).describe_effective();
+        assert!(opted_in.contains("all default tables"), "{opted_in}");
+        assert!(opted_in.contains("TOKEN_DATAS_V2"), "{opted_in}");
+
+        let allowlist = TableFlags::from_set(&set(&["current_objects"])).describe_effective();
+        assert!(allowlist.contains("only these tables"), "{allowlist}");
+        assert!(allowlist.contains("CURRENT_OBJECTS"), "{allowlist}");
+    }
+
+    #[test]
+    fn explicit_allowlist_still_excludes_unnamed_tables() {
+        let flags = TableFlags::from_set(&set(&["current_token_datas_v2", "token_datas_v2"]));
+        assert_eq!(
+            filter_data(&flags, TableFlags::CURRENT_TOKEN_DATAS_V2, vec![1]),
+            vec![1]
+        );
+        assert_eq!(
+            filter_data(&flags, TableFlags::TOKEN_DATAS_V2, vec![1]),
+            vec![1]
+        );
+        assert!(filter_data(&flags, TableFlags::CURRENT_TOKEN_OWNERSHIPS_V2, vec![1]).is_empty());
+    }
 }

@@ -1,17 +1,20 @@
-use crate::processors::fungible_asset::{
-    coin_models::coin_supply::CoinSupply,
-    fungible_asset_models::{
-        v2_fungible_asset_activities::PostgresFungibleAssetActivity,
-        v2_fungible_asset_balances::{
-            PostgresCurrentUnifiedFungibleAssetBalance, PostgresFungibleAssetBalance,
+use crate::{
+    processors::fungible_asset::{
+        coin_models::coin_supply::CoinSupply,
+        fungible_asset_models::{
+            v2_fungible_asset_activities::PostgresFungibleAssetActivity,
+            v2_fungible_asset_balances::{
+                PostgresCurrentUnifiedFungibleAssetBalance, PostgresFungibleAssetBalance,
+            },
+            v2_fungible_asset_to_coin_mappings::{
+                FungibleAssetToCoinMapping, FungibleAssetToCoinMappings,
+                PostgresFungibleAssetToCoinMapping,
+            },
+            v2_fungible_metadata::PostgresFungibleAssetMetadataModel,
         },
-        v2_fungible_asset_to_coin_mappings::{
-            FungibleAssetToCoinMapping, FungibleAssetToCoinMappings,
-            PostgresFungibleAssetToCoinMapping,
-        },
-        v2_fungible_metadata::PostgresFungibleAssetMetadataModel,
+        fungible_asset_processor_helpers::{get_fa_to_coin_mapping, parse_v2_coin},
     },
-    fungible_asset_processor_helpers::{get_fa_to_coin_mapping, parse_v2_coin},
+    utils::table_flags::{should_write, TableFlags},
 };
 use ahash::AHashMap;
 use anyhow::Result;
@@ -30,12 +33,14 @@ where
     Self: Sized + Send + 'static,
 {
     pub fa_to_coin_mapping: FungibleAssetToCoinMappings,
+    tables_to_write: TableFlags,
 }
 
 impl FungibleAssetExtractor {
-    pub fn new() -> Self {
+    pub fn new(tables_to_write: TableFlags) -> Self {
         Self {
             fa_to_coin_mapping: AHashMap::new(),
+            tables_to_write,
         }
     }
 
@@ -56,7 +61,7 @@ impl FungibleAssetExtractor {
 
 impl Default for FungibleAssetExtractor {
     fn default() -> Self {
-        Self::new()
+        Self::new(TableFlags::empty())
     }
 }
 
@@ -119,11 +124,17 @@ impl Processable for FungibleAssetExtractor {
                 .map(PostgresFungibleAssetMetadataModel::from)
                 .collect();
 
+        // Opt-in only, so don't pay to convert rows the storer would discard -- they would
+        // otherwise stay alive in the channel for every in-flight batch.
         let postgres_fungible_asset_balances: Vec<PostgresFungibleAssetBalance> =
-            raw_fungible_asset_balances
-                .into_iter()
-                .map(PostgresFungibleAssetBalance::from)
-                .collect();
+            if should_write(&self.tables_to_write, TableFlags::FUNGIBLE_ASSET_BALANCES) {
+                raw_fungible_asset_balances
+                    .into_iter()
+                    .map(PostgresFungibleAssetBalance::from)
+                    .collect()
+            } else {
+                vec![]
+            };
 
         let postgres_current_unified_fab_v1: Vec<PostgresCurrentUnifiedFungibleAssetBalance> =
             raw_current_unified_fab_v1

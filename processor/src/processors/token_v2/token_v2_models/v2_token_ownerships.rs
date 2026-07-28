@@ -25,7 +25,7 @@ use crate::{
             },
         },
     },
-    schema::current_token_ownerships_v2,
+    schema::{current_token_ownerships_v2, token_ownerships_v2},
 };
 use ahash::AHashMap;
 use allocative_derive::Allocative;
@@ -773,6 +773,51 @@ impl From<CurrentTokenOwnershipV2> for ParquetCurrentTokenOwnershipV2 {
             is_fungible_v2: raw_item.is_fungible_v2,
             last_transaction_version: raw_item.last_transaction_version,
             last_transaction_timestamp: raw_item.last_transaction_timestamp,
+            non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
+        }
+    }
+}
+
+/// This is the postgres version of TokenOwnershipV2, i.e. the historical (non-current) table
+/// with one row per write set change.
+#[derive(
+    Clone, Debug, Deserialize, Eq, FieldCount, Identifiable, Insertable, PartialEq, Serialize,
+)]
+#[diesel(primary_key(transaction_version, write_set_change_index))]
+#[diesel(table_name = token_ownerships_v2)]
+pub struct PostgresTokenOwnershipV2 {
+    pub transaction_version: i64,
+    pub write_set_change_index: i64,
+    pub token_data_id: String,
+    pub property_version_v1: BigDecimal,
+    pub owner_address: Option<String>,
+    pub storage_id: String,
+    pub amount: BigDecimal,
+    pub table_type_v1: Option<String>,
+    pub token_properties_mutated_v1: Option<serde_json::Value>,
+    pub is_soulbound_v2: Option<bool>,
+    pub token_standard: String,
+    pub is_fungible_v2: Option<bool>,
+    pub transaction_timestamp: chrono::NaiveDateTime,
+    pub non_transferrable_by_owner: Option<bool>,
+}
+
+impl From<TokenOwnershipV2> for PostgresTokenOwnershipV2 {
+    fn from(raw_item: TokenOwnershipV2) -> Self {
+        Self {
+            transaction_version: raw_item.transaction_version,
+            write_set_change_index: raw_item.write_set_change_index,
+            token_data_id: raw_item.token_data_id,
+            property_version_v1: raw_item.property_version_v1,
+            owner_address: raw_item.owner_address,
+            storage_id: raw_item.storage_id,
+            amount: raw_item.amount,
+            table_type_v1: raw_item.table_type_v1,
+            token_properties_mutated_v1: raw_item.token_properties_mutated_v1,
+            is_soulbound_v2: raw_item.is_soulbound_v2,
+            token_standard: raw_item.token_standard,
+            is_fungible_v2: raw_item.is_fungible_v2,
+            transaction_timestamp: raw_item.transaction_timestamp,
             non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
         }
     }
