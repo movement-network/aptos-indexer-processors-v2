@@ -4,9 +4,10 @@ use crate::processors::token_v2::{
         token_royalty::PostgresCurrentTokenRoyaltyV1, tokens::TableMetadataForToken,
     },
     token_v2_models::{
-        v2_collections::CurrentCollectionV2, v2_token_activities::PostgresTokenActivityV2,
-        v2_token_datas::PostgresCurrentTokenDataV2,
-        v2_token_ownerships::PostgresCurrentTokenOwnershipV2,
+        v2_collections::CurrentCollectionV2,
+        v2_token_activities::PostgresTokenActivityV2,
+        v2_token_datas::{PostgresCurrentTokenDataV2, PostgresTokenDataV2},
+        v2_token_ownerships::{PostgresCurrentTokenOwnershipV2, PostgresTokenOwnershipV2},
     },
     token_v2_processor_helpers::parse_v2_token,
 };
@@ -51,6 +52,8 @@ impl Processable for TokenV2Extractor {
         Vec<PostgresTokenActivityV2>,
         Vec<PostgresCurrentTokenRoyaltyV1>,
         Vec<PostgresCurrentTokenPendingClaim>,
+        Vec<PostgresTokenDataV2>,
+        Vec<PostgresTokenOwnershipV2>,
     );
     type RunType = AsyncRunType;
 
@@ -68,6 +71,8 @@ impl Processable for TokenV2Extractor {
                 Vec<PostgresTokenActivityV2>,
                 Vec<PostgresCurrentTokenRoyaltyV1>,
                 Vec<PostgresCurrentTokenPendingClaim>,
+                Vec<PostgresTokenDataV2>,
+                Vec<PostgresTokenOwnershipV2>,
             )>,
         >,
         ProcessorError,
@@ -91,12 +96,10 @@ impl Processable for TokenV2Extractor {
             query_retry_delay_ms: self.query_retry_delay_ms,
         };
 
-        // Token v2 processor only writes to current tables. If you need to write to non-current
-        // tables, modify TokenV2Storer step to include the tables you want to write to.
         let (
             _,
-            _,
-            _,
+            raw_token_datas_v2,
+            raw_token_ownerships_v2,
             current_collections_v2,
             raw_current_token_datas_v2,
             raw_current_deleted_token_datas_v2,
@@ -154,6 +157,16 @@ impl Processable for TokenV2Extractor {
                 .map(PostgresCurrentTokenOwnershipV2::from)
                 .collect();
 
+        let postgres_token_datas_v2: Vec<PostgresTokenDataV2> = raw_token_datas_v2
+            .into_iter()
+            .map(PostgresTokenDataV2::from)
+            .collect();
+
+        let postgres_token_ownerships_v2: Vec<PostgresTokenOwnershipV2> = raw_token_ownerships_v2
+            .into_iter()
+            .map(PostgresTokenOwnershipV2::from)
+            .collect();
+
         Ok(Some(TransactionContext {
             data: (
                 current_collections_v2,
@@ -164,6 +177,8 @@ impl Processable for TokenV2Extractor {
                 postgres_token_activities_v2,
                 postgres_current_token_royalties_v1,
                 postgres_current_token_claims,
+                postgres_token_datas_v2,
+                postgres_token_ownerships_v2,
             ),
             metadata: transactions.metadata,
         }))

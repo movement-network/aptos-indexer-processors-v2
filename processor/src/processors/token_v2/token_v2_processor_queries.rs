@@ -8,9 +8,10 @@ use crate::{
             token_royalty::PostgresCurrentTokenRoyaltyV1,
         },
         token_v2_models::{
-            v2_collections::CurrentCollectionV2, v2_token_activities::PostgresTokenActivityV2,
-            v2_token_datas::PostgresCurrentTokenDataV2,
-            v2_token_ownerships::PostgresCurrentTokenOwnershipV2,
+            v2_collections::CurrentCollectionV2,
+            v2_token_activities::PostgresTokenActivityV2,
+            v2_token_datas::{PostgresCurrentTokenDataV2, PostgresTokenDataV2},
+            v2_token_ownerships::{PostgresCurrentTokenOwnershipV2, PostgresTokenOwnershipV2},
         },
     },
     schema,
@@ -49,6 +50,28 @@ pub fn insert_current_collections_v2_query(
             inserted_at.eq(excluded(inserted_at)),
         ))
         .filter(last_transaction_version.le(excluded(last_transaction_version)))
+}
+
+pub fn insert_token_datas_v2_query(
+    items_to_insert: Vec<PostgresTokenDataV2>,
+) -> impl QueryFragment<Pg> + diesel::query_builder::QueryId + Send {
+    use schema::token_datas_v2::dsl::*;
+
+    diesel::insert_into(schema::token_datas_v2::table)
+        .values(items_to_insert)
+        .on_conflict((transaction_version, write_set_change_index))
+        .do_nothing()
+}
+
+pub fn insert_token_ownerships_v2_query(
+    items_to_insert: Vec<PostgresTokenOwnershipV2>,
+) -> impl QueryFragment<Pg> + diesel::query_builder::QueryId + Send {
+    use schema::token_ownerships_v2::dsl::*;
+
+    diesel::insert_into(schema::token_ownerships_v2::table)
+        .values(items_to_insert)
+        .on_conflict((transaction_version, write_set_change_index))
+        .do_nothing()
 }
 
 pub fn insert_current_token_datas_v2_query(

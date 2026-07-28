@@ -92,7 +92,7 @@ impl Processable for FungibleAssetStorer {
         let (
             fungible_asset_activities,
             fungible_asset_metadata,
-            _,
+            fungible_asset_balances,
             (current_unified_fab_v1, current_unified_fab_v2),
             _,
             fa_to_coin_mappings,
@@ -106,12 +106,14 @@ impl Processable for FungibleAssetStorer {
             current_unified_fab_v2,
             fungible_asset_activities,
             fungible_asset_metadata,
+            fungible_asset_balances,
             fa_to_coin_mappings,
         ) = filter_datasets!(self, {
             current_unified_fab_v1 => TableFlags::CURRENT_FUNGIBLE_ASSET_BALANCES,
             current_unified_fab_v2 => TableFlags::CURRENT_FUNGIBLE_ASSET_BALANCES,
             fungible_asset_activities => TableFlags::FUNGIBLE_ASSET_ACTIVITIES,
             fungible_asset_metadata => TableFlags::FUNGIBLE_ASSET_METADATA,
+            fungible_asset_balances => TableFlags::FUNGIBLE_ASSET_BALANCES,
             fa_to_coin_mappings => TableFlags::FUNGIBLE_ASSET_TO_COIN_MAPPINGS,
         });
 
@@ -151,6 +153,15 @@ impl Processable for FungibleAssetStorer {
                 &per_table_chunk_sizes,
             ),
         );
+        let fab = execute_in_chunks(
+            self.conn_pool.clone(),
+            insert_fungible_asset_balances_query,
+            &fungible_asset_balances,
+            get_config_table_chunk_size::<PostgresFungibleAssetBalance>(
+                "fungible_asset_balances",
+                &per_table_chunk_sizes,
+            ),
+        );
         let fatcm = execute_in_chunks(
             self.conn_pool.clone(),
             insert_fungible_asset_to_coin_mappings_query,
@@ -160,9 +171,9 @@ impl Processable for FungibleAssetStorer {
                 &per_table_chunk_sizes,
             ),
         );
-        let (faa_res, fam_res, cufab1_res, cufab2_res, fatcm_res) =
-            tokio::join!(faa, fam, cufab_v1, cufab_v2, fatcm);
-        for res in [faa_res, fam_res, cufab1_res, cufab2_res, fatcm_res] {
+        let (faa_res, fam_res, fab_res, cufab1_res, cufab2_res, fatcm_res) =
+            tokio::join!(faa, fam, fab, cufab_v1, cufab_v2, fatcm);
+        for res in [faa_res, fam_res, fab_res, cufab1_res, cufab2_res, fatcm_res] {
             match res {
                 Ok(_) => {},
                 Err(e) => {
