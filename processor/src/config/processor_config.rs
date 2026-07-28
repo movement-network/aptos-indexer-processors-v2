@@ -326,6 +326,31 @@ impl ParquetDefaultProcessorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::table_flags::TableFlags;
+
+    #[test]
+    fn test_tables_to_write_parses_at_processor_config_level() {
+        // Mirrors the shape documented in processor/local-config.yaml: `tables_to_write`
+        // sits alongside `type`, since DefaultProcessorConfig is flattened into the
+        // per-processor configs.
+        let yaml = r#"
+type: token_v2_processor
+channel_size: 100
+tables_to_write:
+  - token_datas_v2
+  - token_ownerships_v2
+"#;
+        let config: ProcessorConfig = serde_yaml::from_str(yaml).unwrap();
+        let ProcessorConfig::TokenV2Processor(token_v2_config) = &config else {
+            panic!("expected a token_v2_processor config, got {config:?}");
+        };
+
+        let flags = TableFlags::from_set(&token_v2_config.default_config.tables_to_write);
+        assert_eq!(
+            flags,
+            TableFlags::TOKEN_DATAS_V2 | TableFlags::TOKEN_OWNERSHIPS_V2
+        );
+    }
 
     #[test]
     fn test_valid_table_names() {
