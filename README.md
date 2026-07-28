@@ -22,7 +22,57 @@ If you want to index a custom contract, we recommend using the [Quickstart Guide
 - `processor_config`
     - `type`: which processor to run
     - `channel_size`: size of channel in between steps
+    - `tables_to_write`: which tables this processor writes. See [Selecting tables to write](#selecting-tables-to-write) below.
     - Some processors require additional configuration. See the full list of configs [here](./processor/src/config/processor_config.rs#L102).
+
+##### Selecting tables to write
+
+`tables_to_write` takes Postgres table names, matched case-insensitively. Unrecognized names are skipped with a warning rather than failing startup, so check the logs if a table is unexpectedly empty.
+
+- **Omitted or empty**: every table the processor supports, except the opt-in-only ones below.
+- **Non-empty**: an allowlist -- only the tables you name are written. Anything you leave out is silently *not* written, so list every table you want.
+
+Each processor logs its effective selection at startup (`Writing all default tables for this processor; ...`), which is the quickest way to confirm a config does what you meant.
+
+###### Opt-in-only tables
+
+Three historical tables are **not** written unless you name them explicitly:
+
+| Table | Processor |
+|---|---|
+| `fungible_asset_balances` | `fungible_asset_processor` |
+| `token_datas_v2` | `token_v2_processor` |
+| `token_ownerships_v2` | `token_v2_processor` |
+
+They hold one row per write set change rather than one row per entity, so they grow much faster than their `current_` counterparts -- size storage accordingly before enabling them.
+
+Naming an opt-in-only table does **not** turn `tables_to_write` into an allowlist for everything else. This enables the two historical tables while leaving every other `token_v2_processor` table on:
+
+```yaml
+processor_config:
+  type: token_v2_processor
+  tables_to_write:
+    - token_datas_v2
+    - token_ownerships_v2
+```
+
+To restrict to an explicit set instead, list all the tables you want:
+
+```yaml
+processor_config:
+  type: token_v2_processor
+  tables_to_write:
+    - current_token_datas_v2
+    - current_token_ownerships_v2
+    - token_datas_v2
+```
+
+Caveats when enabling these:
+
+- **No backfill.** Rows only start appearing from the version the processor is at when you enable the flag. Inserts use `ON CONFLICT ... DO NOTHING`, so replaying earlier versions will not fill in or correct history you missed.
+- **`token_datas_v2.is_deleted_v2` is always `NULL`.** Burns are only recorded in `current_token_datas_v2`; no historical row is emitted for them. Do not use `token_datas_v2` alone to determine whether a token still exists.
+- **The `legacy_migration_v1` views stay incomplete.** `legacy_migration_v1.coin_balances` reads `fungible_asset_balances` directly, so it will start returning *partial* history -- data covering only the period since you enabled the flag. The token views (`legacy_migration_v1.token_ownerships`, `token_activities`) join `collections_v2`, which no Postgres processor writes, so they continue to return zero rows.
+- **Supporting indexes are not created.** The indexes these tables need for the legacy views are commented out in [the migration](./processor/src/db/migrations/2024-05-22-200847_add_v1_migration_views/up.sql) because they must be built `CONCURRENTLY` outside of diesel. Create them before querying at any scale.
 
 - `processor_mode`: The processor can be run in these modes:
     - Default (bootstrap) mode: On first run, the processor will start from `initial_starting_version`. Upon restart, the processor continues from `processor_status.last_success_version` saved in DB. 

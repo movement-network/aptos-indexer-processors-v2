@@ -1,15 +1,18 @@
-use crate::processors::token_v2::{
-    token_models::{
-        token_claims::PostgresCurrentTokenPendingClaim,
-        token_royalty::PostgresCurrentTokenRoyaltyV1, tokens::TableMetadataForToken,
+use crate::{
+    processors::token_v2::{
+        token_models::{
+            token_claims::PostgresCurrentTokenPendingClaim,
+            token_royalty::PostgresCurrentTokenRoyaltyV1, tokens::TableMetadataForToken,
+        },
+        token_v2_models::{
+            v2_collections::CurrentCollectionV2,
+            v2_token_activities::PostgresTokenActivityV2,
+            v2_token_datas::{PostgresCurrentTokenDataV2, PostgresTokenDataV2},
+            v2_token_ownerships::{PostgresCurrentTokenOwnershipV2, PostgresTokenOwnershipV2},
+        },
+        token_v2_processor_helpers::parse_v2_token,
     },
-    token_v2_models::{
-        v2_collections::CurrentCollectionV2,
-        v2_token_activities::PostgresTokenActivityV2,
-        v2_token_datas::{PostgresCurrentTokenDataV2, PostgresTokenDataV2},
-        v2_token_ownerships::{PostgresCurrentTokenOwnershipV2, PostgresTokenOwnershipV2},
-    },
-    token_v2_processor_helpers::parse_v2_token,
+    utils::table_flags::{should_write, TableFlags},
 };
 use aptos_indexer_processor_sdk::{
     aptos_protos::transaction::v1::Transaction,
@@ -28,15 +31,29 @@ where
     query_retries: u32,
     query_retry_delay_ms: u64,
     conn_pool: ArcDbPool,
+    tables_to_write: TableFlags,
 }
 
 impl TokenV2Extractor {
-    pub fn new(query_retries: u32, query_retry_delay_ms: u64, conn_pool: ArcDbPool) -> Self {
+    pub fn new(
+        query_retries: u32,
+        query_retry_delay_ms: u64,
+        conn_pool: ArcDbPool,
+        tables_to_write: TableFlags,
+    ) -> Self {
         Self {
             query_retries,
             query_retry_delay_ms,
             conn_pool,
+            tables_to_write,
         }
+    }
+
+    /// The historical (non-current) tables are opt-in. Converting their rows only to have
+    /// the storer drop them would keep a full batch of them alive in the channel for every
+    /// in-flight batch, so skip the conversion entirely when the table is disabled.
+    fn wants(&self, flag: TableFlags) -> bool {
+        should_write(&self.tables_to_write, flag)
     }
 }
 
@@ -157,15 +174,25 @@ impl Processable for TokenV2Extractor {
                 .map(PostgresCurrentTokenOwnershipV2::from)
                 .collect();
 
-        let postgres_token_datas_v2: Vec<PostgresTokenDataV2> = raw_token_datas_v2
-            .into_iter()
-            .map(PostgresTokenDataV2::from)
-            .collect();
+        let postgres_token_datas_v2: Vec<PostgresTokenDataV2> =
+            if self.wants(TableFlags::TOKEN_DATAS_V2) {
+                raw_token_datas_v2
+                    .into_iter()
+                    .map(PostgresTokenDataV2::from)
+                    .collect()
+            } else {
+                vec![]
+            };
 
-        let postgres_token_ownerships_v2: Vec<PostgresTokenOwnershipV2> = raw_token_ownerships_v2
-            .into_iter()
-            .map(PostgresTokenOwnershipV2::from)
-            .collect();
+        let postgres_token_ownerships_v2: Vec<PostgresTokenOwnershipV2> =
+            if self.wants(TableFlags::TOKEN_OWNERSHIPS_V2) {
+                raw_token_ownerships_v2
+                    .into_iter()
+                    .map(PostgresTokenOwnershipV2::from)
+                    .collect()
+            } else {
+                vec![]
+            };
 
         Ok(Some(TransactionContext {
             data: (

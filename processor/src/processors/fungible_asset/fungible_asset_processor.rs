@@ -126,6 +126,11 @@ impl ProcessorTrait for FungibleAssetProcessor {
         };
         let channel_size = processor_config.channel_size;
         let deprecated_table_flags = TableFlags::from_set(&processor_config.tables_to_write);
+        info!(
+            processor = self.name(),
+            "Writing {}",
+            deprecated_table_flags.describe_effective()
+        );
 
         // Define processor steps
         let transaction_stream = TransactionStreamStep::new(TransactionStreamConfig {
@@ -135,7 +140,7 @@ impl ProcessorTrait for FungibleAssetProcessor {
         })
         .await?;
 
-        let mut fa_extractor = FungibleAssetExtractor::new();
+        let mut fa_extractor = FungibleAssetExtractor::new(deprecated_table_flags);
         fa_extractor
             .bootstrap_fa_to_coin_mapping(self.db_pool.clone())
             .await?;

@@ -129,12 +129,18 @@ impl ProcessorTrait for TokenV2Processor {
             ..self.config.transaction_stream_config.clone()
         })
         .await?;
+        let opt_in_tables = TableFlags::from_set(&processor_config.default_config.tables_to_write);
+        info!(
+            processor = self.name(),
+            "Writing {}",
+            opt_in_tables.describe_effective()
+        );
         let token_v2_extractor = TokenV2Extractor::new(
             processor_config.query_retries,
             processor_config.query_retry_delay_ms,
             self.db_pool.clone(),
+            opt_in_tables,
         );
-        let opt_in_tables = TableFlags::from_set(&processor_config.default_config.tables_to_write);
         let token_v2_storer = TokenV2Storer::new(
             self.db_pool.clone(),
             processor_config.clone(),

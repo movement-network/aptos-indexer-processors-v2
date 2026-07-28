@@ -116,6 +116,28 @@ impl TableFlags {
         }
         flags
     }
+
+    /// Human readable summary of what this config actually writes, for logging at startup.
+    ///
+    /// `tables_to_write` is easy to get subtly wrong -- an allowlist silently suppresses
+    /// everything it omits, and a name belonging to a different processor suppresses
+    /// everything. Emitting this once at boot makes the effective set visible instead of
+    /// leaving operators to infer it from missing rows.
+    pub fn describe_effective(&self) -> String {
+        let allowlist = self.difference(TableFlags::OPT_IN_ONLY);
+        let opted_in = self.intersection(TableFlags::OPT_IN_ONLY);
+
+        let base = if allowlist.is_empty() {
+            "all default tables for this processor".to_string()
+        } else {
+            format!("only these tables: {allowlist:?}")
+        };
+        if opted_in.is_empty() {
+            format!("{base}; no opt-in-only tables enabled")
+        } else {
+            format!("{base}; plus opt-in-only tables: {opted_in:?}")
+        }
+    }
 }
 
 /**
@@ -129,21 +151,23 @@ impl TableFlags {
  * every table that used to be written by default.
  */
 pub fn filter_data<T>(tables_to_write: &TableFlags, flag: TableFlags, data: Vec<T>) -> Vec<T> {
-    if TableFlags::OPT_IN_ONLY.contains(flag) {
-        return if tables_to_write.contains(flag) {
-            data
-        } else {
-            vec![]
-        };
-    }
-
-    // Opt-in names don't count towards "did the operator specify an allowlist?".
-    let allowlist = tables_to_write.difference(TableFlags::OPT_IN_ONLY);
-    if allowlist.is_empty() || allowlist.contains(flag) {
+    if should_write(tables_to_write, flag) {
         data
     } else {
         vec![]
     }
+}
+
+/// Whether `flag`'s table is written under this config. Extractors use this to skip building
+/// rows they know the storer would discard; `filter_data` uses it to do the discarding.
+pub fn should_write(tables_to_write: &TableFlags, flag: TableFlags) -> bool {
+    if TableFlags::OPT_IN_ONLY.contains(flag) {
+        return tables_to_write.contains(flag);
+    }
+
+    // Opt-in names don't count towards "did the operator specify an allowlist?".
+    let allowlist = tables_to_write.difference(TableFlags::OPT_IN_ONLY);
+    allowlist.is_empty() || allowlist.contains(flag)
 }
 
 /// Macro to filter multiple data sets with their corresponding table flags in one go
@@ -207,6 +231,21 @@ mod tests {
         );
         // A sibling opt-in table stays off.
         assert!(filter_data(&flags, TableFlags::TOKEN_OWNERSHIPS_V2, vec![1]).is_empty());
+    }
+
+    #[test]
+    fn describe_effective_distinguishes_default_allowlist_and_opt_in() {
+        let default = TableFlags::empty().describe_effective();
+        assert!(default.contains("all default tables"), "{default}");
+        assert!(default.contains("no opt-in-only"), "{default}");
+
+        let opted_in = TableFlags::from_set(&set(&["token_datas_v2"])).describe_effective();
+        assert!(opted_in.contains("all default tables"), "{opted_in}");
+        assert!(opted_in.contains("TOKEN_DATAS_V2"), "{opted_in}");
+
+        let allowlist = TableFlags::from_set(&set(&["current_objects"])).describe_effective();
+        assert!(allowlist.contains("only these tables"), "{allowlist}");
+        assert!(allowlist.contains("CURRENT_OBJECTS"), "{allowlist}");
     }
 
     #[test]
