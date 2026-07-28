@@ -11,7 +11,10 @@ use crate::{
             address_reputation_config::BridgeConfig,
             address_reputation_extractor::AddressReputationExtractor,
             address_reputation_model::BridgeRegistryEntry,
-            address_reputation_storer::AddressReputationStorer, lz_enricher::LzEnricher,
+            address_reputation_storer::AddressReputationStorer,
+            evm_fetch_loop::{DbScoreSaver, EnricherLoop},
+            hypernative::HypernativeClient,
+            lz_enricher::LzEnricher,
         },
         processor_status_saver::{
             get_end_version, get_starting_version, PostgresProcessorStatusSaver,
@@ -134,25 +137,44 @@ impl ProcessorTrait for AddressReputationProcessor {
             "address_reputation: loaded bridge registry from config"
         );
 
-        // Spawn the LZ GUID enricher in the background when enabled. The channel
-        // is unbounded so the extractor never blocks; rate-limiting happens on the
-        // enricher side.
-        let guid_sender = if processor_config.lz_enricher.enabled {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let enricher = LzEnricher::new(
-                self.db_pool.clone(),
-                rx,
-                processor_config.lz_enricher.interval_ms,
-                processor_config.lz_enricher.max_retries,
+        // Spawn the background enricher loop when LZ enrichment is enabled.
+        // Channels are unbounded so the extractor never blocks.
+        let (guid_sender, guid_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (evm_sender, evm_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let lz = if processor_config.lz_enricher.enabled {
+            info!("address_reputation: Layer Zero enricher enabled");
+            Some(LzEnricher::new(
+                Some(self.db_pool.clone()),
                 processor_config.propagate_evm_sources,
-            );
-            tokio::spawn(enricher.run());
-            info!("address_reputation: LZ enricher started");
-            Some(tx)
+                processor_config.lz_enricher.scan_api_base_url.clone(),
+            ))
         } else {
-            info!("address_reputation: LZ enricher disabled");
             None
         };
+
+        let hypernative = if processor_config.hypernative.enabled {
+            info!("address_reputation: Hypernative screener enabled");
+            Some(HypernativeClient::new(
+                processor_config.hypernative.client_id.clone(),
+                processor_config.hypernative.client_secret.clone(),
+                processor_config.hypernative.screener_policy_id.clone(),
+                processor_config.hypernative.screener_url.clone(),
+            ))
+        } else {
+            None
+        };
+        let saver = std::sync::Arc::new(DbScoreSaver::new(self.db_pool.clone()));
+        let loop_ = EnricherLoop::new(
+            Some(self.db_pool.clone()),
+            guid_rx,
+            evm_rx,
+            lz,
+            hypernative,
+            processor_config.lz_enricher.interval_ms,
+            saver,
+        );
+        tokio::spawn(loop_.run());
+        info!("address_reputation: enricher loop started");
 
         let transaction_stream = TransactionStreamStep::new(TransactionStreamConfig {
             starting_version,
@@ -160,7 +182,7 @@ impl ProcessorTrait for AddressReputationProcessor {
             ..self.config.transaction_stream_config.clone()
         })
         .await?;
-        let extractor = AddressReputationExtractor::new(registry, guid_sender);
+        let extractor = AddressReputationExtractor::new(registry, guid_sender, evm_sender);
         let storer = AddressReputationStorer::new(self.db_pool.clone(), processor_config);
         let version_tracker = VersionTrackerStep::new(
             PostgresProcessorStatusSaver::new(self.config.clone(), self.db_pool.clone()),

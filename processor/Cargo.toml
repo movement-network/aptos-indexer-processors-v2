@@ -85,3 +85,4 @@ jemallocator = { version = "0.5.0", features = [
 aptos-indexer-processor-sdk = { workspace = true, features = [
     "testing_framework",
 ] }
+tracing-subscriber = { workspace = true }

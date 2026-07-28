@@ -1,20 +1,19 @@
 // Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
-//! Background task that resolves LayerZero GUIDs → EVM depositor addresses.
+//! LayerZero GUID → EVM depositor resolver.
 //!
-//! At startup the queue is seeded from DB rows where `lz_guid IS NOT NULL AND
-//! evm_source IS NULL`. New GUIDs stream in via an mpsc channel from the
-//! extractor. Items are dequeued at a configurable rate and resolved against the
-//! LZ Scan API (`https://scan.layerzero-api.com/v1/messages/guid/{guid}`).
+//! Resolves a 32-byte LZ message GUID to the EVM address that initiated the
+//! cross-chain transfer by querying the LZ Scan API.
 //!
 //! Resolution outcomes:
 //! - `Ok(Some(evm))` → update `bridge_inflows.evm_source`; seed `address_evm_sources`.
 //! - `Ok(None)`      → GUID absent in LZ DB (HTTP 404); write the NULL sentinel
-//!   (`0x000…000`) so the row is never retried.
+//!   (`EVM_NULL_SENTINEL`) so the row is never retried.
 //! - `Err(_)`        → transient failure; retry up to `max_retries` times with
-//!   exponential backoff. After max retries, log and leave `evm_source` NULL so
-//!   the next processor startup re-enqueues the row.
+//!   exponential backoff.
+//!
+//! The main event loop lives in `evm_fetch_loop.rs`; this module is pure LZ logic.
 
 use super::address_reputation_storer::{seen_ord, upsert_bridge_seed};
 use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
@@ -25,14 +24,11 @@ use diesel::{
 };
 use diesel_async::RunQueryDsl;
 use std::{collections::VecDeque, time::Duration};
-use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{error, info, warn};
-
-const LZ_SCAN_BASE: &str = "https://scan.layerzero-api.com/v1/messages/guid";
+use tracing::{error, warn};
 
 /// Sentinel written when LZ confirms the GUID does not exist (HTTP 404).
 /// Prevents infinite retries for packets that never existed in the LZ DB.
-const EVM_NULL_SENTINEL: &str = "0x0000000000000000000000000000000000000000";
+pub const EVM_NULL_SENTINEL: &str = "0x0000000000000000000000000000000000000000";
 
 // ---------------------------------------------------------------------------
 // Diesel query result types
@@ -59,117 +55,88 @@ struct InflowRow {
 }
 
 // ---------------------------------------------------------------------------
-// LzEnricher
+// LzEnricher — stateless helper used by the enricher loop
 // ---------------------------------------------------------------------------
 
 pub struct LzEnricher {
-    db_pool: ArcDbPool,
-    receiver: UnboundedReceiver<String>,
+    db_pool: Option<ArcDbPool>,
     http: reqwest::Client,
-    interval: Duration,
-    max_retries: u32,
     propagate_evm: bool,
+    scan_api_base_url: String,
 }
 
 impl LzEnricher {
-    pub fn new(
-        db_pool: ArcDbPool,
-        receiver: UnboundedReceiver<String>,
-        interval_ms: u64,
-        max_retries: u32,
-        propagate_evm: bool,
-    ) -> Self {
+    pub fn new(db_pool: Option<ArcDbPool>, propagate_evm: bool, scan_api_base_url: String) -> Self {
         Self {
             db_pool,
-            receiver,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
+                .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .build()
                 .expect("failed to build reqwest::Client"),
-            interval: Duration::from_millis(interval_ms),
-            max_retries,
             propagate_evm,
+            scan_api_base_url,
         }
     }
 
-    pub async fn run(mut self) {
-        let mut queue: VecDeque<String> = self.load_pending().await;
-        info!(
-            pending = queue.len(),
-            "lz_enricher: started, seeded from DB"
-        );
-
-        let mut ticker = tokio::time::interval(self.interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            tokio::select! {
-                msg = self.receiver.recv() => match msg {
-                    Some(guid) => queue.push_back(guid),
-                    None => {
-                        // Sender dropped — process whatever is left then exit.
-                        info!(remaining = queue.len(), "lz_enricher: channel closed, draining queue");
-                        while let Some(guid) = queue.pop_front() {
-                            self.process_guid(&guid).await;
-                        }
-                        info!("lz_enricher: done");
-                        return;
-                    }
-                },
-                _ = ticker.tick() => {
-                    if let Some(guid) = queue.pop_front() {
-                        self.process_guid(&guid).await;
-                    }
-                }
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Per-GUID processing
-    // -----------------------------------------------------------------------
-
-    async fn process_guid(&self, guid: &str) {
-        let mut last_err = String::new();
-        for attempt in 0..=self.max_retries {
-            if attempt > 0 {
-                // 1 s, 2 s, 4 s backoff
-                tokio::time::sleep(Duration::from_secs(1u64 << (attempt - 1))).await;
-            }
-            match self.fetch_evm(guid).await {
-                Ok(Some(evm)) => {
-                    self.write_evm(guid, &evm).await;
-                    return;
-                },
-                Ok(None) => {
-                    // GUID definitively absent in LZ — record sentinel.
-                    self.write_evm(guid, EVM_NULL_SENTINEL).await;
-                    return;
-                },
-                Err(e) => {
-                    last_err = e.to_string();
-                    warn!(lz_guid = guid, attempt, err = %last_err, "lz_enricher: transient error");
-                },
-            }
-        }
-        error!(
-            lz_guid = guid,
-            err = %last_err,
-            retries = self.max_retries,
-            "lz_enricher: giving up after max retries; evm_source stays NULL"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // LZ Scan API fetch
-    // -----------------------------------------------------------------------
-
+    /// Resolve a GUID: query LZ Scan API, update `bridge_inflows`, seed
+    /// `address_evm_sources`. Single attempt — retry logic lives in the caller.
+    ///
     /// Returns:
-    /// - `Ok(Some(evm))` — resolved depositor EVM address
-    /// - `Ok(None)`      — HTTP 404: GUID not in LZ DB (write sentinel)
-    /// - `Err(_)`        — transient failure (network, 5xx, 429, empty data) → retry
+    /// - `Ok(Some(evm))` — resolved; caller may forward EVM to Hypernative.
+    /// - `Ok(None)`      — permanent 404; sentinel written; no retry needed.
+    /// - `Err(_)`        — transient failure; caller should schedule a retry.
+    pub async fn process_guid(&self, guid: &str) -> anyhow::Result<Option<String>> {
+        match self.fetch_evm(guid).await {
+            Ok(Some(evm)) => {
+                self.write_evm(guid, &evm).await;
+                Ok(Some(evm))
+            },
+            Ok(None) => {
+                self.write_evm(guid, EVM_NULL_SENTINEL).await;
+                Ok(None)
+            },
+            Err(e) => {
+                warn!(lz_guid = guid, err = %e, "lz_enricher: fetch failed");
+                Err(e)
+            },
+        }
+    }
+
+    /// Load all unresolved LZ GUIDs from DB at startup.
+    pub async fn load_pending_guids(&self) -> VecDeque<String> {
+        let pool = match self.db_pool.as_ref() {
+            Some(p) => p,
+            None => return VecDeque::new(),
+        };
+        let mut conn = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => {
+                error!(err = ?e, "lz_enricher: failed to get DB connection for startup seed");
+                return VecDeque::new();
+            },
+        };
+        match sql_query(
+            "SELECT lz_guid FROM bridge_inflows \
+              WHERE lz_guid IS NOT NULL AND evm_source IS NULL",
+        )
+        .get_results::<GuidRow>(&mut conn)
+        .await
+        {
+            Ok(rows) => rows.into_iter().map(|r| r.lz_guid).collect(),
+            Err(e) => {
+                error!(err = ?e, "lz_enricher: failed to load pending GUIDs; starting empty");
+                VecDeque::new()
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // LZ Scan API
+    // -----------------------------------------------------------------------
+
     async fn fetch_evm(&self, guid: &str) -> anyhow::Result<Option<String>> {
-        let url = format!("{}/{}", LZ_SCAN_BASE, guid);
+        let url = format!("{}/{}", self.scan_api_base_url, guid);
         let resp = self
             .http
             .get(&url)
@@ -182,7 +149,7 @@ impl LzEnricher {
             return Ok(None);
         }
         if !status.is_success() {
-            anyhow::bail!("HTTP {}", status);
+            anyhow::bail!("LZ HTTP NOK status {} for GUI {}", status, guid);
         }
 
         let body: serde_json::Value = resp
@@ -190,7 +157,6 @@ impl LzEnricher {
             .await
             .map_err(|e| anyhow::anyhow!("json: {e}"))?;
 
-        // Response shape: { "data": [ { "source": { "tx": { "from": "0x…" } }, … } ] }
         let evm = body
             .get("data")
             .and_then(|d| d.get(0))
@@ -202,8 +168,6 @@ impl LzEnricher {
 
         match evm {
             Some(addr) => Ok(Some(addr)),
-            // data[0].source.tx.from missing — packet may be in-flight or
-            // the API schema changed. Treat as transient so we retry.
             None => anyhow::bail!("sender field absent in LZ response (packet may be undelivered)"),
         }
     }
@@ -213,7 +177,11 @@ impl LzEnricher {
     // -----------------------------------------------------------------------
 
     async fn write_evm(&self, guid: &str, evm: &str) {
-        let mut conn = match self.db_pool.get().await {
+        let pool = match self.db_pool.as_ref() {
+            Some(p) => p,
+            None => return,
+        };
+        let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => {
                 error!(lz_guid = guid, err = ?e, "lz_enricher: failed to get DB connection");
@@ -221,8 +189,6 @@ impl LzEnricher {
             },
         };
 
-        // Atomically update bridge_inflows and return the affected rows so we
-        // can seed address_evm_sources in the same DB round-trip.
         let rows: Vec<InflowRow> = match sql_query(
             "UPDATE bridge_inflows \
                SET evm_source = $1 \
@@ -242,16 +208,10 @@ impl LzEnricher {
             },
         };
 
-        if rows.is_empty() {
-            // Already resolved by a concurrent enricher or the row is gone.
+        if rows.is_empty() || !self.propagate_evm || evm == EVM_NULL_SENTINEL {
             return;
         }
 
-        if !self.propagate_evm || evm == EVM_NULL_SENTINEL {
-            return;
-        }
-
-        // Seed address_evm_sources for each updated inflow that has a known asset.
         for row in &rows {
             let Some(ref asset) = row.asset_type else {
                 continue;
@@ -269,33 +229,6 @@ impl LzEnricher {
             {
                 warn!(lz_guid = guid, err = ?e, "lz_enricher: failed to seed address_evm_sources");
             }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Startup seed
-    // -----------------------------------------------------------------------
-
-    async fn load_pending(&self) -> VecDeque<String> {
-        let mut conn = match self.db_pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(err = ?e, "lz_enricher: failed to get DB connection for startup seed");
-                return VecDeque::new();
-            },
-        };
-        match sql_query(
-            "SELECT lz_guid FROM bridge_inflows \
-              WHERE lz_guid IS NOT NULL AND evm_source IS NULL",
-        )
-        .get_results::<GuidRow>(&mut conn)
-        .await
-        {
-            Ok(rows) => rows.into_iter().map(|r| r.lz_guid).collect(),
-            Err(e) => {
-                error!(err = ?e, "lz_enricher: failed to load pending GUIDs; starting empty");
-                VecDeque::new()
-            },
         }
     }
 }

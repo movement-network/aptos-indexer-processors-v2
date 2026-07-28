@@ -82,6 +82,7 @@ fn config() -> AddressReputationConfig {
         bridges: Vec::new(),
         propagate_evm_sources: true,
         lz_enricher: Default::default(),
+        hypernative: Default::default(),
     }
 }
 
@@ -217,52 +218,51 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
         m as usize,
         "B should have M evm sources after A->B"
     );
-    for r in &b_rows {
-        assert_eq!(r.hops_min, 1, "downstream hop should be exactly 1");
+
+    // All A sources have hops_min=0 → discount = 1/(0+1) = 1.
+    // For each Ei: evm_fund=0 (no direct inflow), transfer_fund = transfer_amt * amounts[i] / seed_total.
+    let b_map: std::collections::HashMap<_, _> =
+        b_rows.iter().map(|r| (r.evm_address.clone(), r)).collect();
+    for (i, &amt) in amounts.iter().enumerate() {
+        let row = b_map[&evm(i as u32)];
+        assert_eq!(row.hops_min, 1, "E{i}: hop must be 1");
         assert_eq!(
-            r.evm_fund,
+            row.evm_fund,
             BigDecimal::from(0),
-            "B has no direct bridge inflow"
+            "E{i}: no direct bridge inflow"
+        );
+        let expected_tf =
+            BigDecimal::from(transfer_amt) * BigDecimal::from(amt) / BigDecimal::from(seed_total);
+        let diff = (&row.transfer_fund - &expected_tf).abs();
+        assert!(
+            diff < BigDecimal::from_str("0.000001").unwrap(),
+            "E{i}: transfer_fund got {}, expected {expected_tf}",
+            row.transfer_fund,
         );
     }
 
-    // A's sources all have hops_min=0, so discount factor = 1/(0+1) = 1.
-    // Sum of B's transfer_fund equals transfer_amt * sum(evm_fund_i/total * 1) = transfer_amt.
+    // Aggregate sanity: sum of all transfer_funds == transfer_amt.
     let total_b: BigDecimal = b_rows
         .iter()
-        .fold(BigDecimal::from(0), |acc, r| acc + &r.transfer_fund);
-    let expected = BigDecimal::from(transfer_amt);
-    let diff = (&total_b - &expected).abs();
+        .fold(BigDecimal::from(0), |a, r| a + &r.transfer_fund);
+    let diff = (&total_b - &BigDecimal::from(transfer_amt)).abs();
     assert!(
         diff < BigDecimal::from_str("0.000001").unwrap(),
-        "sum(transfer_fund on B) must equal transfer amount; got {total_b}, expected {expected}"
+        "sum(B.transfer_fund) must equal transfer_amt; got {total_b}"
     );
 
-    // Spot-check: E0 seeded 100 out of 1500, hops_min=0 → discount=1.
-    // B[E0].transfer_fund = 700 * 100/1500 * 1 = 700*100/1500.
-    let e0 = evm(0);
-    let e0_row = b_rows
-        .iter()
-        .find(|r| r.evm_address == e0)
-        .expect("E0 present");
-    let target =
-        BigDecimal::from(transfer_amt) * BigDecimal::from(100) / BigDecimal::from(seed_total);
-    let diff = (&e0_row.transfer_fund - &target).abs();
-    assert!(
-        diff < BigDecimal::from_str("0.000001").unwrap(),
-        "E0 transfer_fund off: got {}, expected ~{}, diff={}",
-        e0_row.transfer_fund,
-        target,
-        diff
-    );
-
-    // A must be unchanged (no debit on outflow).
+    // A must be unchanged: evm_fund untouched, transfer_fund stays 0.
     let a_rows_after = read_rows(&pool, A_ADDR).await;
     assert_eq!(a_rows_after.len(), m as usize);
     for (before, after) in a_rows.iter().zip(a_rows_after.iter()) {
         assert_eq!(
             before.evm_fund, after.evm_fund,
-            "sender's evm_fund must not change on outflow"
+            "sender evm_fund must not change on outflow"
+        );
+        assert_eq!(
+            after.transfer_fund,
+            BigDecimal::from(0),
+            "sender transfer_fund must stay 0"
         );
     }
 }

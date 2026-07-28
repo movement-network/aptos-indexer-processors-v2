@@ -81,11 +81,13 @@ pub struct BridgeRegistryEntry {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct EvmRiskScore {
     pub evm_address: String,
     pub risk_score: BigDecimal,
-    pub risk_label: Option<String>,
-    pub source: Option<String>,
+    pub risk_label: String,
+    pub source: String,
+    pub recommendation: String,
+    pub severity: String,
     pub fetched_at: chrono::NaiveDateTime,
 }

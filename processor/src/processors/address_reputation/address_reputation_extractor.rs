@@ -39,19 +39,23 @@ pub type BridgeRegistry = Arc<Vec<BridgeRegistryEntry>>;
 
 pub struct AddressReputationExtractor {
     pub bridge_registry: BridgeRegistry,
-    /// Sends newly extracted LZ GUIDs to the background enricher loop.
-    /// None when the enricher is disabled in config.
-    pub guid_sender: Option<UnboundedSender<String>>,
+    /// Sends newly extracted LZ GUIDs to the background enricher loop for resolution.
+    pub guid_sender: UnboundedSender<String>,
+    /// Sends directly-known EVM addresses (Circle USDCx, LZ compose) to the enricher
+    /// loop for Hypernative screening without needing GUID resolution first.
+    pub evm_sender: UnboundedSender<String>,
 }
 
 impl AddressReputationExtractor {
     pub fn new(
         bridge_registry: BridgeRegistry,
-        guid_sender: Option<UnboundedSender<String>>,
+        guid_sender: UnboundedSender<String>,
+        evm_sender: UnboundedSender<String>,
     ) -> Self {
         Self {
             bridge_registry,
             guid_sender,
+            evm_sender,
         }
     }
 }
@@ -154,12 +158,18 @@ impl Processable for AddressReputationExtractor {
                         if inflow.lz_guid.is_none() {
                             inflow.lz_guid = extract_payload_guid(txn, kind);
                         }
-                        // Forward new GUIDs to the background enricher so it can
-                        // resolve the EVM depositor address via the LZ Scan API.
-                        if let (Some(guid), Some(sender)) =
-                            (inflow.lz_guid.as_ref(), self.guid_sender.as_ref())
-                        {
-                            let _ = sender.send(guid.clone());
+                        // Forward LZ GUIDs for resolution and directly-known EVM
+                        // addresses for Hypernative screening to the enricher loop.
+                        if let Some(guid) = inflow.lz_guid.as_ref() {
+                            if let Err(e) = self.guid_sender.send(guid.clone()) {
+                                tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                            }
+                        }
+                        // Forward Circle EVM address to update its score in the evm fetch loop
+                        if let Some(evm) = inflow.evm_source.as_ref() {
+                            if let Err(e) = self.evm_sender.send(evm.clone()) {
+                                tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                            }
                         }
                         txn_inflows.push(inflow);
                         continue;

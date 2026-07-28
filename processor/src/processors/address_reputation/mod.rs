@@ -3,6 +3,8 @@ pub mod address_reputation_extractor;
 pub mod address_reputation_model;
 pub mod address_reputation_processor;
 pub mod address_reputation_storer;
+pub mod evm_fetch_loop;
+pub mod hypernative;
 pub mod intent_payload;
 pub mod lz_enricher;
 pub mod lz_payload;
