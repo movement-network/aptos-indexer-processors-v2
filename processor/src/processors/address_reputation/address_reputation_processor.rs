@@ -12,8 +12,10 @@ use crate::{
             address_reputation_extractor::AddressReputationExtractor,
             address_reputation_model::BridgeRegistryEntry,
             address_reputation_storer::AddressReputationStorer,
-            evm_fetch_loop::{DbScoreSaver, EnricherLoop},
-            hypernative::HypernativeClient,
+            evm_screening::{
+                evm_storer::DbScoreSaver, hypernative::HypernativeClient, lz_storer::DbLzStore,
+                EnricherLoop,
+            },
             lz_enricher::LzEnricher,
         },
         processor_status_saver::{
@@ -141,37 +143,37 @@ impl ProcessorTrait for AddressReputationProcessor {
         // Channels are unbounded so the extractor never blocks.
         let (guid_sender, guid_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (evm_sender, evm_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let lz = if processor_config.lz_enricher.enabled {
-            info!("address_reputation: Layer Zero enricher enabled");
-            Some(LzEnricher::new(
-                Some(self.db_pool.clone()),
-                processor_config.propagate_evm_sources,
-                processor_config.lz_enricher.scan_api_base_url.clone(),
-            ))
-        } else {
-            None
-        };
+        let lz_db = std::sync::Arc::new(DbLzStore::new(
+            self.db_pool.clone(),
+            processor_config.propagate_evm_sources,
+        ));
+        let lz = LzEnricher::new(lz_db, processor_config.lz_enricher.scan_api_base_url.clone());
 
-        let hypernative = if processor_config.hypernative.enabled {
-            info!("address_reputation: Hypernative screener enabled");
-            Some(HypernativeClient::new(
-                processor_config.hypernative.client_id.clone(),
-                processor_config.hypernative.client_secret.clone(),
-                processor_config.hypernative.screener_policy_id.clone(),
-                processor_config.hypernative.screener_url.clone(),
-            ))
-        } else {
-            None
-        };
-        let saver = std::sync::Arc::new(DbScoreSaver::new(self.db_pool.clone()));
+        info!(
+            max_concurrent = processor_config.hypernative.max_concurrent_requests,
+            max_rps = processor_config.hypernative.max_rps,
+            ttl_secs = processor_config.hypernative.ttl_secs,
+            "address_reputation: Hypernative screener starting (connection verified before loop)"
+        );
+
+        let ttl = std::time::Duration::from_secs(processor_config.hypernative.ttl_secs);
+        let db = std::sync::Arc::new(DbScoreSaver::new(Some(self.db_pool.clone()), ttl));
+        let hypernative = HypernativeClient::new(
+            processor_config.hypernative.client_id.clone(),
+            processor_config.hypernative.client_secret.clone(),
+            processor_config.hypernative.screener_policy_id.clone(),
+            processor_config.hypernative.screener_url.clone(),
+            processor_config.hypernative.max_concurrent_requests,
+            processor_config.hypernative.max_rps,
+            processor_config.hypernative.ttl_secs,
+        );
         let loop_ = EnricherLoop::new(
-            Some(self.db_pool.clone()),
+            db,
             guid_rx,
             evm_rx,
             lz,
             hypernative,
             processor_config.lz_enricher.interval_ms,
-            saver,
         );
         tokio::spawn(loop_.run());
         info!("address_reputation: enricher loop started");

@@ -31,9 +31,6 @@ pub struct AddressReputationConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LzEnricherConfig {
-    /// Enable or disable the enricher. Defaults to true.
-    #[serde(default = "LzEnricherConfig::default_enabled")]
-    pub enabled: bool,
     /// Milliseconds between consecutive LZ Scan API requests. Defaults to 500 (2 req/s).
     #[serde(default = "LzEnricherConfig::default_interval_ms")]
     pub interval_ms: u64,
@@ -43,10 +40,6 @@ pub struct LzEnricherConfig {
 }
 
 impl LzEnricherConfig {
-    const fn default_enabled() -> bool {
-        true
-    }
-
     const fn default_interval_ms() -> u64 {
         500
     }
@@ -59,7 +52,6 @@ impl LzEnricherConfig {
 impl Default for LzEnricherConfig {
     fn default() -> Self {
         Self {
-            enabled: Self::default_enabled(),
             interval_ms: Self::default_interval_ms(),
             scan_api_base_url: Self::default_scan_api_base_url(),
         }
@@ -136,8 +128,6 @@ impl Default for AddressReputationConfig {
 #[serde(deny_unknown_fields)]
 pub struct HypernativeConfig {
     #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
     pub client_id: String,
     #[serde(default)]
     pub client_secret: String,
@@ -147,22 +137,50 @@ pub struct HypernativeConfig {
     /// Hypernative screener API endpoint.
     #[serde(default = "HypernativeConfig::default_screener_url")]
     pub screener_url: String,
+    /// Maximum number of concurrent in-flight HTTP requests to Hypernative.
+    /// 0 means unlimited. Defaults to 4.
+    #[serde(default = "HypernativeConfig::default_max_concurrent_requests")]
+    pub max_concurrent_requests: u32,
+    /// Maximum requests per second sent to Hypernative (sliding-window).
+    /// 0 means unlimited. Defaults to 10.
+    #[serde(default = "HypernativeConfig::default_max_rps")]
+    pub max_rps: u32,
+    /// How long a successfully-screened address is considered fresh, in seconds.
+    /// Addresses screened within this window are skipped (both at startup via the
+    /// DB query and at request time via the in-process in-flight cache).
+    /// Defaults to 3600 (1 hour).
+    #[serde(default = "HypernativeConfig::default_ttl_secs")]
+    pub ttl_secs: u64,
 }
 
 impl HypernativeConfig {
     fn default_screener_url() -> String {
         "https://api.hypernative.xyz/screener/reputation".to_string()
     }
+
+    const fn default_max_concurrent_requests() -> u32 {
+        4
+    }
+
+    const fn default_max_rps() -> u32 {
+        10
+    }
+
+    const fn default_ttl_secs() -> u64 {
+        3600
+    }
 }
 
 impl Default for HypernativeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
             client_id: String::new(),
             client_secret: String::new(),
             screener_policy_id: None,
             screener_url: Self::default_screener_url(),
+            max_concurrent_requests: Self::default_max_concurrent_requests(),
+            max_rps: Self::default_max_rps(),
+            ttl_secs: Self::default_ttl_secs(),
         }
     }
 }

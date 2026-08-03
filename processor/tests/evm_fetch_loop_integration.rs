@@ -4,9 +4,9 @@
 //! Integration test for `evm_fetch_loop::EnricherLoop`.
 //!
 //! Exercises the full loop with real HTTP calls to the LZ Scan API and the
-//! Hypernative screener. The DB save step is replaced by a `CapturingSaver`
-//! that writes scores into an in-memory channel so the test can inspect them
-//! without a running PostgreSQL instance.
+//! Hypernative screener. The DB layer is replaced by a `MockScreeningDb` that
+//! stores error scores in memory so they can be re-queued after connection,
+//! without requiring a running PostgreSQL instance.
 //!
 //! ## Running
 //! This test is marked `#[ignore]` because it requires network access and
@@ -29,32 +29,83 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use processor::processors::address_reputation::{
     address_reputation_model::EvmRiskScore,
-    evm_fetch_loop::{EnricherLoop, ScoreSaver},
-    hypernative::HypernativeClient,
-    lz_enricher::LzEnricher,
+    evm_screening::{
+        hypernative::{EvmScreeningDb, HypernativeClient},
+        lz_enricher::{LzDb, LzEnricher},
+        EnricherLoop,
+    },
 };
-use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc::{self, UnboundedSender};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use wiremock::{
+    matchers::{body_string_contains, method},
+    Mock, MockServer, ResponseTemplate,
+};
 
 // ---------------------------------------------------------------------------
-// CapturingSaver — test double for ScoreSaver
+// MockLzDb — no-op LzDb for tests that don't need DB persistence
 // ---------------------------------------------------------------------------
 
-struct CapturingSaver {
+struct MockLzDb;
+
+#[async_trait]
+impl LzDb for MockLzDb {
+    async fn load_pending_guids(&self) -> VecDeque<String> {
+        VecDeque::new()
+    }
+
+    async fn write_evm(&self, _guid: &str, _evm: &str) {}
+}
+
+// ---------------------------------------------------------------------------
+// MockScreeningDb — in-memory EvmScreeningDb for tests
+// ---------------------------------------------------------------------------
+
+struct MockScreeningDb {
+    /// EVMs saved with error score (score=0) — pending re-queue.
+    pending: Mutex<Vec<String>>,
+    /// Channel for real scores (score > 0) to verify in the test.
     tx: UnboundedSender<EvmRiskScore>,
 }
 
-impl CapturingSaver {
+impl MockScreeningDb {
     fn new(tx: UnboundedSender<EvmRiskScore>) -> Self {
-        Self { tx }
+        Self {
+            pending: Mutex::new(Vec::new()),
+            tx,
+        }
+    }
+
+    fn pending_addresses(&self) -> Vec<String> {
+        self.pending.lock().unwrap().clone()
     }
 }
 
 #[async_trait]
-impl ScoreSaver for CapturingSaver {
+impl EvmScreeningDb for MockScreeningDb {
     async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()> {
-        let _ = self.tx.send(score.clone());
+        if score.risk_score == BigDecimal::from(0) {
+            // Error sentinel: park for re-queuing, don't send to collector.
+            self.pending
+                .lock()
+                .unwrap()
+                .push(score.evm_address.clone());
+        } else {
+            let _ = self.tx.send(score.clone());
+        }
         Ok(())
+    }
+
+    async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+        false
+    }
+
+    async fn load_pending_evms(&self) -> VecDeque<String> {
+        self.pending.lock().unwrap().drain(..).collect()
     }
 }
 
@@ -63,12 +114,11 @@ impl ScoreSaver for CapturingSaver {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires network access and HYPERNATIVE_CLIENT_ID / HYPERNATIVE_CLIENT_SECRET env vars"]
 async fn evm_fetch_loop_integration() {
     // Initialize tracing so loop logs appear on stdout with --nocapture.
-    // let _ = tracing_subscriber::fmt()
-    //     .with_env_filter("processor=debug,info")
-    //     .try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("processor=debug,info")
+        .try_init();
 
     let client_id = match std::env::var("HYPERNATIVE_CLIENT_ID")
         .ok()
@@ -101,22 +151,29 @@ async fn evm_fetch_loop_integration() {
     // Sender address that the GUID above resolves to (verified against LZ Scan API).
     const GUID_RESOLVED_EVM: &str = "0x97e6a34897a32e7103f3cf260f0c9ca5ca1fb90b";
 
-    // No database needed: pass None so all DB paths are skipped immediately.
-    let lz = LzEnricher::new(None, false, lz_scan_base);
-    let hn = HypernativeClient::new(client_id, client_secret, None, screener_url);
+    let lz = LzEnricher::new(Arc::new(MockLzDb), lz_scan_base);
+    // Use relaxed limits and a short TTL in tests (60 s so the 3 test addresses
+    // are never suppressed as duplicates within a single test run).
+    let hn = HypernativeClient::new(client_id, client_secret, None, screener_url, 4, 10, 60);
 
     let (guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
     let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
     let (score_tx, mut score_rx) = mpsc::unbounded_channel::<EvmRiskScore>();
 
-    let saver = Arc::new(CapturingSaver::new(score_tx));
+    let db = Arc::new(MockScreeningDb::new(score_tx));
 
     // Tick interval 50 ms so items are dispatched quickly in the test.
-    let loop_ = EnricherLoop::new(None, guid_rx, evm_rx, Some(lz), Some(hn), 50, saver);
+    let loop_ = EnricherLoop::new(db, guid_rx, evm_rx, lz, hn, 50);
     tokio::spawn(loop_.run());
 
-    // Send test inputs.
+    // Send EVM_APPROVE before the loop connects to Hypernative.
+    // MockScreeningDb will park it as a pending error score and re-queue it
+    // once load_pending_evms() is called after the first successful ping.
     evm_tx.send(EVM_APPROVE.to_string()).unwrap();
+
+    // Wait for the connection to be established (~1 s typical).
+    let _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
     evm_tx.send(EVM_DENY.to_string()).unwrap();
     guid_tx.send(LZ_GUID.to_string()).unwrap();
 
@@ -152,7 +209,7 @@ async fn evm_fetch_loop_integration() {
         scores.len()
     );
 
-    // --- approve address: Approve / N/A → score = 0.1 + 0.1 = 0.2 ----------
+    // --- approve address: Approve / N/A → score < 1.0 -----------------------
     let approve = scores
         .iter()
         .find(|s| s.evm_address.eq_ignore_ascii_case(EVM_APPROVE))
@@ -176,7 +233,7 @@ async fn evm_fetch_loop_integration() {
         approve.risk_score
     );
 
-    // --- deny address: Deny / High → score = 1.0 + 0.9 = 1.9 ---------------
+    // --- deny address: Deny / High → score > 1.0 ----------------------------
     let deny = scores
         .iter()
         .find(|s| s.evm_address.eq_ignore_ascii_case(EVM_DENY))
@@ -200,7 +257,7 @@ async fn evm_fetch_loop_integration() {
         deny.risk_score
     );
 
-    // --- GUID-resolved address: known sender → Approve / N/A → 0.2 ---------
+    // --- GUID-resolved address: known sender → Approve / N/A → < 1.0 -------
     let guid_score = scores
         .iter()
         .find(|s| s.evm_address.eq_ignore_ascii_case(GUID_RESOLVED_EVM))
@@ -220,4 +277,330 @@ async fn evm_fetch_loop_integration() {
     );
 
     eprintln!("[test] PASSED");
+}
+
+// ===========================================================================
+// Wiremock-based tests — no real credentials or DB required
+// ===========================================================================
+
+const TEST_EVM: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// The null address used by HypernativeClient::ping() to verify connectivity.
+const PING_ADDR: &str = "0x0000000000000000000000000000000000000000";
+/// MAX_RETRIES from evm_connection.rs.
+const MAX_RETRIES: u32 = 5;
+
+fn approve_body() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": [{
+            "address": TEST_EVM,
+            "recommendation": "Approve",
+            "severity": "N/A",
+            "totalIncomingUsd": 0.0,
+            "totalOutgoingUsd": 0.0,
+            "policyId": "test-policy",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "flags": []
+        }],
+        "error": null
+    })
+}
+
+fn deny_body() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": [{
+            "address": TEST_EVM,
+            "recommendation": "Deny",
+            "severity": "High",
+            "totalIncomingUsd": 1000000.0,
+            "totalOutgoingUsd": 2000000.0,
+            "policyId": "test-policy",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "flags": []
+        }],
+        "error": null
+    })
+}
+
+/// Valid JSON but missing the required "recommendation" and "severity" fields.
+fn malformed_body() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": [{
+            "address": TEST_EVM,
+            "totalIncomingUsd": 0.0,
+            "flags": []
+        }],
+        "error": null
+    })
+}
+
+fn make_client(url: String) -> HypernativeClient {
+    HypernativeClient::new("id".to_string(), "secret".to_string(), None, url, 4, 10, 3600)
+}
+
+/// Register a ping mock (matches the null-address body) that always returns 200.
+/// Must be mounted FIRST so wiremock's FIFO matching routes ping requests here
+/// before any screening mock can claim them.
+async fn mount_ping_mock(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(body_string_contains(PING_ADDR))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"success":true,"data":[],"error":null})),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Count requests that are NOT pings (i.e. real screening calls).
+async fn screening_request_count(mock: &MockServer) -> usize {
+    mock.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| !String::from_utf8_lossy(&r.body).contains(PING_ADDR))
+        .count()
+}
+
+/// Build an EnricherLoop wired to a wiremock server with short delays for tests.
+fn make_loop(
+    db: Arc<dyn EvmScreeningDb>,
+    guid_rx: UnboundedReceiver<String>,
+    evm_rx: UnboundedReceiver<String>,
+    hn: HypernativeClient,
+) -> EnricherLoop {
+    let lz = LzEnricher::new(Arc::new(MockLzDb), "http://x".to_string());
+    EnricherLoop::new(db, guid_rx, evm_rx, lz, hn, 5)
+        .with_retry_delay(Duration::from_millis(10))
+        .with_reconnect_interval(Duration::from_millis(10))
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: HTTP 429 → backoff pause → resume with correct score
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_429_pauses_then_resumes() {
+    let mock = MockServer::start().await;
+
+    // Ping always succeeds (registered first = matched first by FIFO).
+    mount_ping_mock(&mock).await;
+
+    // First screening call: 429.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .mount(&mock)
+        .await;
+
+    // Fallback: approve after the 429 backoff expires.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(approve_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    // Short backoff so the test completes in ~200 ms.
+    let hn = make_client(mock.uri()).with_backoff_429(Duration::from_millis(50));
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    // Allow time for: ping + 1st attempt (429 + 50ms backoff) + retry → approve.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let score = score_rx.try_recv().expect("approve score should be saved after 429 recovery");
+    assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
+    assert_eq!(score.recommendation.to_lowercase(), "approve");
+    assert!(mock_db.pending_addresses().is_empty(), "no error score expected on success");
+
+    // Exactly 2 screening attempts: 1 × 429 + 1 × 200.
+    assert_eq!(
+        screening_request_count(&mock).await,
+        2,
+        "expected 1 × 429 + 1 × 200 screening requests"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: 5xx every attempt → exhausted → address stored with score 0
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_5xx_exhausted_saves_error_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, _score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    // Allow time for: ping + 5 attempts × 10ms retry delay.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        mock_db.pending_addresses().contains(&TEST_EVM.to_string()),
+        "error score (score=0) should be stored after all retries exhausted"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        MAX_RETRIES as usize,
+        "should have made exactly MAX_RETRIES screening attempts"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: 5xx on first 2 attempts, then success → correct score stored
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_5xx_recovers_saves_correct_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    // First 2 screening calls: 500.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(2)
+        .mount(&mock)
+        .await;
+
+    // Fallback: deny response after the 500s are exhausted.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(deny_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    // Allow time for: ping + 2 × 500 (10ms each) + 1 × 200.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let score = score_rx.try_recv().expect("deny score should be saved after recovery");
+    assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
+    assert_eq!(score.recommendation.to_lowercase(), "deny");
+    assert_eq!(score.severity.to_lowercase(), "high");
+    assert!(
+        score.risk_score > BigDecimal::from(1),
+        "deny+high score should be > 1, got {}",
+        score.risk_score
+    );
+    assert!(
+        mock_db.pending_addresses().is_empty(),
+        "no error score should be stored on successful recovery"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        3,
+        "expected 2 × 500 + 1 × 200 = 3 screening requests"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Auth error (401) every attempt → exhausted → error score stored
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_auth_error_exhausted_saves_error_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, _score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        mock_db.pending_addresses().contains(&TEST_EVM.to_string()),
+        "error score should be stored after auth-error exhaustion"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        MAX_RETRIES as usize,
+        "should have made exactly MAX_RETRIES screening attempts"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Malformed response (missing required fields) → exhausted → error score
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_malformed_response_exhausted_saves_error_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    // 200 OK but body is missing "recommendation" and "severity".
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(malformed_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, _score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        mock_db.pending_addresses().contains(&TEST_EVM.to_string()),
+        "error score should be stored after malformed-response exhaustion"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        MAX_RETRIES as usize,
+        "should have made exactly MAX_RETRIES screening attempts on malformed responses"
+    );
 }
