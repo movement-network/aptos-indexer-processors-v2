@@ -90,10 +90,7 @@ impl EvmScreeningDb for MockScreeningDb {
     async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()> {
         if score.risk_score == BigDecimal::from(0) {
             // Error sentinel: park for re-queuing, don't send to collector.
-            self.pending
-                .lock()
-                .unwrap()
-                .push(score.evm_address.clone());
+            self.pending.lock().unwrap().push(score.evm_address.clone());
         } else {
             let _ = self.tx.send(score.clone());
         }
@@ -337,7 +334,15 @@ fn malformed_body() -> serde_json::Value {
 }
 
 fn make_client(url: String) -> HypernativeClient {
-    HypernativeClient::new("id".to_string(), "secret".to_string(), None, url, 4, 10, 3600)
+    HypernativeClient::new(
+        "id".to_string(),
+        "secret".to_string(),
+        None,
+        url,
+        4,
+        10,
+        3600,
+    )
 }
 
 /// Register a ping mock (matches the null-address body) that always returns 200.
@@ -416,10 +421,15 @@ async fn test_429_pauses_then_resumes() {
     // Allow time for: ping + 1st attempt (429 + 50ms backoff) + retry → approve.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let score = score_rx.try_recv().expect("approve score should be saved after 429 recovery");
+    let score = score_rx
+        .try_recv()
+        .expect("approve score should be saved after 429 recovery");
     assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
     assert_eq!(score.recommendation.to_lowercase(), "approve");
-    assert!(mock_db.pending_addresses().is_empty(), "no error score expected on success");
+    assert!(
+        mock_db.pending_addresses().is_empty(),
+        "no error score expected on success"
+    );
 
     // Exactly 2 screening attempts: 1 × 429 + 1 × 200.
     assert_eq!(
@@ -506,7 +516,9 @@ async fn test_5xx_recovers_saves_correct_score() {
     // Allow time for: ping + 2 × 500 (10ms each) + 1 × 200.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let score = score_rx.try_recv().expect("deny score should be saved after recovery");
+    let score = score_rx
+        .try_recv()
+        .expect("deny score should be saved after recovery");
     assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
     assert_eq!(score.recommendation.to_lowercase(), "deny");
     assert_eq!(score.severity.to_lowercase(), "high");

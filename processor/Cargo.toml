@@ -59,6 +59,7 @@ parquet_derive = { workspace = true }
 postgres-native-tls = { workspace = true }
 prometheus = { workspace = true }
 prost = { workspace = true }
+moka = { version = "0.12", features = ["future"] }
 rayon = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
@@ -86,3 +87,4 @@ aptos-indexer-processor-sdk = { workspace = true, features = [
     "testing_framework",
 ] }
 tracing-subscriber = { workspace = true }
+wiremock = "0.5"

@@ -147,7 +147,10 @@ impl ProcessorTrait for AddressReputationProcessor {
             self.db_pool.clone(),
             processor_config.propagate_evm_sources,
         ));
-        let lz = LzEnricher::new(lz_db, processor_config.lz_enricher.scan_api_base_url.clone());
+        let lz = LzEnricher::new(
+            lz_db,
+            processor_config.lz_enricher.scan_api_base_url.clone(),
+        );
 
         info!(
             max_concurrent = processor_config.hypernative.max_concurrent_requests,

@@ -1,9 +1,11 @@
-use super::hypernative::{error_score, screen_evms, EvmScreeningDb, HypernativeClient};
-use super::{LoopCtx, RetryItem, MAX_RETRIES};
+use super::{
+    hypernative::{error_score, screen_evms, EvmScreeningDb, HypernativeClient},
+    LoopCtx, RetryItem, MAX_RETRIES,
+};
 use async_trait::async_trait;
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt};
 use std::{collections::VecDeque, sync::Arc, time::Duration};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
 // Connection state trait

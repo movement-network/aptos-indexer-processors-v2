@@ -1,8 +1,10 @@
 // Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::address_reputation_storer::{seen_ord, upsert_bridge_seed};
-use super::lz_enricher::EVM_NULL_SENTINEL;
+use super::{
+    super::address_reputation_storer::{seen_ord, upsert_bridge_seed},
+    lz_enricher::EVM_NULL_SENTINEL,
+};
 use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
@@ -62,7 +64,10 @@ pub struct DbLzStore {
 
 impl DbLzStore {
     pub fn new(pool: ArcDbPool, propagate_evm: bool) -> Self {
-        Self { pool, propagate_evm }
+        Self {
+            pool,
+            propagate_evm,
+        }
     }
 }
 

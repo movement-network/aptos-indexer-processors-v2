@@ -25,9 +25,8 @@
 //! leaves the address uncached and retryable. `moka` enforces the TTL expiry and
 //! a maximum capacity automatically — no manual eviction needed.
 
-use super::super::address_reputation_model::EvmRiskScore;
 pub use super::evm_storer::{DbScoreSaver, EvmScreeningDb};
-use super::lz_enricher::EVM_NULL_SENTINEL;
+use super::{super::address_reputation_model::EvmRiskScore, lz_enricher::EVM_NULL_SENTINEL};
 use bigdecimal::BigDecimal;
 use std::{
     collections::VecDeque,
@@ -318,7 +317,9 @@ impl HypernativeClient {
             let get_f64 = |key: &str| entry.get(key).and_then(|v| v.as_f64());
             let address = get_str("address").unwrap_or_default();
             let recommendation = get_str("recommendation").ok_or_else(|| {
-                anyhow::anyhow!("malformed Hypernative response: 'recommendation' missing for {address}")
+                anyhow::anyhow!(
+                    "malformed Hypernative response: 'recommendation' missing for {address}"
+                )
             })?;
             let severity = get_str("severity").ok_or_else(|| {
                 anyhow::anyhow!("malformed Hypernative response: 'severity' missing for {address}")
@@ -459,7 +460,7 @@ pub async fn screen_evms(
             hn.screener_url(),
         );
         if let Err(e) = saver.save(&score).await {
-            error!(evm_address = %evm, err = %e, "evm_fetch_loop: failed to save risk score");
+            tracing::error!(evm_address = %evm, err = %e, "evm_fetch_loop: failed to save risk score");
         } else {
             info!(
                 evm_address    = %score.evm_address,

@@ -12,8 +12,8 @@ mod evm_connection;
 pub mod evm_storer;
 pub mod hypernative;
 pub mod lz_enricher;
-pub mod lz_storer;
 pub mod lz_payload;
+pub mod lz_storer;
 
 /// Maximum number of attempts per item (first attempt + this many retries).
 const MAX_RETRIES: u32 = 5;

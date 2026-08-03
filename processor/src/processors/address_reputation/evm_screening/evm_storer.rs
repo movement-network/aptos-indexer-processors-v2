@@ -1,5 +1,4 @@
-use super::super::address_reputation_model::EvmRiskScore;
-use super::lz_enricher::EVM_NULL_SENTINEL;
+use super::{super::address_reputation_model::EvmRiskScore, lz_enricher::EVM_NULL_SENTINEL};
 use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
 use async_trait::async_trait;
 use diesel::{
