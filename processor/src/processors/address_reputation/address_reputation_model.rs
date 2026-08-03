@@ -90,4 +90,8 @@ pub struct EvmRiskScore {
     pub recommendation: String,
     pub severity: String,
     pub fetched_at: chrono::NaiveDateTime,
+    /// `true` when this address still needs a valid screening result:
+    /// set for error scores (risk_score=0) and cleared to `false` when a
+    /// successful Hypernative result is saved.
+    pub to_be_updated: bool,
 }

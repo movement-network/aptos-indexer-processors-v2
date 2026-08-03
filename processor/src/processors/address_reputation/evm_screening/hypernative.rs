@@ -364,6 +364,7 @@ pub fn error_score(evm: &str) -> EvmRiskScore {
         recommendation: "not available".to_string(),
         severity: "not available".to_string(),
         fetched_at: chrono::Utc::now().naive_utc(),
+        to_be_updated: true,
     }
 }
 
@@ -394,6 +395,7 @@ pub fn compute_risk_score(evm: &str, result: &HypernativeResult, source: &str) -
         recommendation: result.recommendation.clone(),
         severity: result.severity.clone(),
         fetched_at: chrono::Utc::now().naive_utc(),
+        to_be_updated: false,
     }
 }
 

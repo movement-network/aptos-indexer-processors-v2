@@ -113,9 +113,9 @@ impl EvmScreeningDb for MockScreeningDb {
 #[tokio::test(flavor = "multi_thread")]
 async fn evm_fetch_loop_integration() {
     // Initialize tracing so loop logs appear on stdout with --nocapture.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("processor=debug,info")
-        .try_init();
+    // let _ = tracing_subscriber::fmt()
+    //     .with_env_filter("processor=debug,info")
+    //     .try_init();
 
     let client_id = match std::env::var("HYPERNATIVE_CLIENT_ID")
         .ok()

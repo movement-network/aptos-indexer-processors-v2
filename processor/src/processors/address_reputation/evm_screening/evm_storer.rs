@@ -3,7 +3,7 @@ use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
 use async_trait::async_trait;
 use diesel::{
     sql_query,
-    sql_types::{Numeric, Timestamp, Varchar},
+    sql_types::{Bool, Numeric, Timestamp, Varchar},
 };
 use diesel_async::RunQueryDsl;
 use std::{collections::VecDeque, time::Duration};
@@ -68,7 +68,7 @@ impl EvmScreeningDb for DbScoreSaver {
             "SELECT evm_address AS evm_source \
              FROM evm_address_risk_scores \
              WHERE evm_address = $1 \
-               AND risk_score > 0 \
+               AND to_be_updated = FALSE \
                AND fetched_at > $2 \
              LIMIT 1",
         )
@@ -92,8 +92,6 @@ impl EvmScreeningDb for DbScoreSaver {
                 return VecDeque::new();
             },
         };
-        let ttl_cutoff =
-            (chrono::Utc::now() - chrono::Duration::seconds(self.ttl.as_secs() as i64)).naive_utc();
         match sql_query(
             "SELECT DISTINCT bi.evm_source \
                FROM bridge_inflows bi \
@@ -102,18 +100,15 @@ impl EvmScreeningDb for DbScoreSaver {
                 AND bi.evm_source NOT IN (\
                   SELECT evm_address \
                     FROM evm_address_risk_scores \
-                   WHERE risk_score > 0 \
-                     AND fetched_at > $2\
+                   WHERE to_be_updated = FALSE\
                 ) \
              UNION \
-             -- Previously failed and TTL expired: worth retrying. \
+             -- All addresses pending a screening result (errors and newly added). \
              SELECT evm_address AS evm_source \
                FROM evm_address_risk_scores \
-              WHERE risk_score = 0 \
-                AND fetched_at <= $2",
+              WHERE to_be_updated = TRUE",
         )
         .bind::<Varchar, _>(EVM_NULL_SENTINEL)
-        .bind::<Timestamp, _>(ttl_cutoff)
         .get_results::<EvmRow>(&mut conn)
         .await
         {
@@ -134,15 +129,16 @@ async fn save_risk_score(pool: &ArcDbPool, score: &EvmRiskScore) -> anyhow::Resu
     let mut conn = pool.get().await?;
     sql_query(
         "INSERT INTO evm_address_risk_scores \
-            (evm_address, risk_score, risk_label, source, recommendation, severity, fetched_at, inserted_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) \
+            (evm_address, risk_score, risk_label, source, recommendation, severity, fetched_at, inserted_at, to_be_updated) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8) \
          ON CONFLICT (evm_address) DO UPDATE SET \
             risk_score     = EXCLUDED.risk_score, \
             risk_label     = EXCLUDED.risk_label, \
             source         = EXCLUDED.source, \
             recommendation = EXCLUDED.recommendation, \
             severity       = EXCLUDED.severity, \
-            fetched_at     = EXCLUDED.fetched_at",
+            fetched_at     = EXCLUDED.fetched_at, \
+            to_be_updated  = EXCLUDED.to_be_updated",
     )
     .bind::<Varchar, _>(&score.evm_address)
     .bind::<Numeric, _>(&score.risk_score)
@@ -151,6 +147,7 @@ async fn save_risk_score(pool: &ArcDbPool, score: &EvmRiskScore) -> anyhow::Resu
     .bind::<Varchar, _>(&score.recommendation)
     .bind::<Varchar, _>(&score.severity)
     .bind::<Timestamp, _>(score.fetched_at)
+    .bind::<Bool, _>(score.to_be_updated)
     .execute(&mut conn)
     .await?;
     Ok(())
