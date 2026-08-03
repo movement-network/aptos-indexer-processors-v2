@@ -39,7 +39,7 @@ use aptos_indexer_processor_sdk::{
     utils::chain_id_check::check_or_update_chain_id,
 };
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 pub struct AddressReputationProcessor {
     pub config: IndexerProcessorConfig,
@@ -178,7 +178,7 @@ impl ProcessorTrait for AddressReputationProcessor {
             hypernative,
             processor_config.lz_enricher.interval_ms,
         );
-        tokio::spawn(loop_.run());
+        let mut enricher_handle = tokio::spawn(loop_.run());
         info!("address_reputation: enricher loop started");
 
         let transaction_stream = TransactionStreamStep::new(TransactionStreamConfig {
@@ -203,17 +203,28 @@ impl ProcessorTrait for AddressReputationProcessor {
         .end_and_return_output_receiver(channel_size);
 
         loop {
-            match buffer_receiver.recv().await {
-                Ok(txn_context) => {
-                    debug!(
-                        "address_reputation: finished versions [{:?}, {:?}]",
-                        txn_context.metadata.start_version, txn_context.metadata.end_version,
-                    );
-                },
-                Err(e) => {
-                    info!("No more transactions in channel: {:?}", e);
-                    break Ok(());
-                },
+            tokio::select! {
+                result = buffer_receiver.recv() => {
+                    match result {
+                        Ok(txn_context) => {
+                            debug!(
+                                "address_reputation: finished versions [{:?}, {:?}]",
+                                txn_context.metadata.start_version, txn_context.metadata.end_version,
+                            );
+                        },
+                        Err(e) => {
+                            info!("No more transactions in channel: {:?}", e);
+                            break Ok(());
+                        },
+                    }
+                }
+                result = &mut enricher_handle => {
+                    match result {
+                        Ok(()) => error!("address_reputation: enricher loop exited unexpectedly"),
+                        Err(ref e) => error!(err = ?e, "address_reputation: enricher loop panicked"),
+                    }
+                    break Err(anyhow::anyhow!("enricher loop terminated unexpectedly"));
+                }
             }
         }
     }
