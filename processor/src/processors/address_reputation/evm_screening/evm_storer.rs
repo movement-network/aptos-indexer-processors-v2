@@ -103,7 +103,6 @@ impl EvmScreeningDb for DbScoreSaver {
                    WHERE to_be_updated = FALSE\
                 ) \
              UNION \
-             -- All addresses pending a screening result (errors and newly added). \
              SELECT evm_address AS evm_source \
                FROM evm_address_risk_scores \
               WHERE to_be_updated = TRUE",
