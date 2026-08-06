@@ -19,10 +19,26 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use diesel::{
     sql_query,
-    sql_types::{BigInt, Numeric, Text, Varchar},
+    sql_types::{BigInt, Integer, Numeric, Text, Varchar},
 };
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
-use tracing::debug;
+use tracing::{debug, info};
+
+#[derive(diesel::QueryableByName)]
+struct AesRow {
+    #[diesel(sql_type = Varchar)]
+    movement_address: String,
+    #[diesel(sql_type = Varchar)]
+    asset_type: String,
+    #[diesel(sql_type = Varchar)]
+    evm_address: String,
+    #[diesel(sql_type = Numeric)]
+    evm_fund: BigDecimal,
+    #[diesel(sql_type = Numeric)]
+    transfer_fund: BigDecimal,
+    #[diesel(sql_type = Integer)]
+    hops_min: i32,
+}
 
 pub struct AddressReputationStorer
 where
@@ -208,19 +224,31 @@ pub async fn upsert_bridge_seed(
             evm_fund       = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = 0";
-    sql_query(sql_str)
+            hops_min       = 0 \
+        RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
+    let rows = sql_query(sql_str)
         .bind::<Varchar, _>(recipient)
         .bind::<Varchar, _>(asset)
         .bind::<Varchar, _>(evm)
         .bind::<Numeric, _>(amount)
         .bind::<BigInt, _>(ord)
-        .execute(conn)
+        .get_results::<AesRow>(conn)
         .await
         .map_err(|e| ProcessorError::DBStoreError {
             message: format!("Failed to upsert bridge evm seed: {e:?}"),
             query: None,
         })?;
+    for row in &rows {
+        info!(
+            movement_address = %row.movement_address,
+            evm_address = %row.evm_address,
+            asset_type = %row.asset_type,
+            evm_fund = %row.evm_fund,
+            transfer_fund = %row.transfer_fund,
+            hops_min = row.hops_min,
+            "aes: bridge seed upsert",
+        );
+    }
     Ok(())
 }
 
@@ -256,18 +284,31 @@ async fn propagate_evm_sources(
             transfer_fund  = address_evm_sources.transfer_fund + EXCLUDED.transfer_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min)";
-    sql_query(sql_str)
+            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min) \
+        RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
+    let rows = sql_query(sql_str)
         .bind::<Text, _>(from_addr)
         .bind::<Varchar, _>(asset)
         .bind::<Varchar, _>(to_addr)
         .bind::<Numeric, _>(amount)
         .bind::<BigInt, _>(ord)
-        .execute(conn)
+        .get_results::<AesRow>(conn)
         .await
         .map_err(|e| ProcessorError::DBStoreError {
             message: format!("Failed to propagate evm sources {from_addr} -> {to_addr}: {e:?}"),
             query: None,
         })?;
+    for row in &rows {
+        info!(
+            movement_address = %row.movement_address,
+            evm_address = %row.evm_address,
+            asset_type = %row.asset_type,
+            evm_fund = %row.evm_fund,
+            transfer_fund = %row.transfer_fund,
+            hops_min = row.hops_min,
+            from_addr,
+            "aes: propagate upsert",
+        );
+    }
     Ok(())
 }
