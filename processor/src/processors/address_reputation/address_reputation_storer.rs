@@ -276,7 +276,7 @@ async fn propagate_evm_sources(
              first_seen_ord, last_seen_ord, hops_min) \
         SELECT $3, $2, s.evm_address, \
                0, \
-               ($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), \
+               ROUND(($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), 9), \
                $5, $5, s.hops_min + 1 \
           FROM src s CROSS JOIN total \
          WHERE total.t IS NOT NULL AND total.t > 0 \

@@ -359,9 +359,34 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         // is arg[0], a big-endian IntentPayload whose `local_depositor` is the
         // EVM address that called `depositForBurn` on the source chain.
         "circle_intent" => {
-            let arg = args.first()?;
-            let bytes = intent_payload::parse_hex_arg(arg)?;
-            intent_payload::decode_local_depositor(&bytes)
+            let arg = match args.first() {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(txn_version = txn.version, "circle_intent: no args in payload");
+                    return None;
+                },
+            };
+            let bytes = match intent_payload::parse_hex_arg(arg) {
+                Some(b) => b,
+                None => {
+                    tracing::warn!(
+                        txn_version = txn.version,
+                        arg0 = %arg,
+                        "circle_intent: failed to parse arg[0] as hex"
+                    );
+                    return None;
+                },
+            };
+            let result = intent_payload::decode_local_depositor(&bytes);
+            if result.is_none() {
+                tracing::warn!(
+                    txn_version = txn.version,
+                    arg0_len = bytes.len(),
+                    arg0_prefix = %hex::encode(&bytes[..bytes.len().min(16)]),
+                    "circle_intent: decode_local_depositor returned None"
+                );
+            }
+            result
         },
         // LayerZero V2 OFT: when `sendParam.composeMsg` is non-empty on the
         // Ethereum side, OFTCore prepends `addressToBytes32(msg.sender)` to the
