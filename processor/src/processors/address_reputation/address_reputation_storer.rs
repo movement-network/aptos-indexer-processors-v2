@@ -22,6 +22,7 @@ use diesel::{
     sql_types::{BigInt, Integer, Numeric, Text, Varchar},
 };
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info};
 
 #[derive(diesel::QueryableByName)]
@@ -46,11 +47,22 @@ where
 {
     conn_pool: ArcDbPool,
     config: AddressReputationConfig,
+    /// Receives LZ GUIDs after bridge_inflows is committed so the enricher never
+    /// races against a row that doesn't exist yet.
+    guid_sender: UnboundedSender<String>,
 }
 
 impl AddressReputationStorer {
-    pub fn new(conn_pool: ArcDbPool, config: AddressReputationConfig) -> Self {
-        Self { conn_pool, config }
+    pub fn new(
+        conn_pool: ArcDbPool,
+        config: AddressReputationConfig,
+        guid_sender: UnboundedSender<String>,
+    ) -> Self {
+        Self {
+            conn_pool,
+            config,
+            guid_sender,
+        }
     }
 }
 
@@ -84,6 +96,11 @@ impl Processable for AddressReputationStorer {
         let end_v = input.metadata.end_version;
         let edges_len = edges.len();
         let inflows_len = inflows.len();
+        // Collect GUIDs before moving inflows into the transaction closure.
+        // They are sent to the enricher AFTER the transaction commits so the
+        // bridge_inflows row is guaranteed to exist when write_evm runs.
+        let pending_guids: Vec<String> =
+            inflows.iter().filter_map(|bi| bi.lz_guid.clone()).collect();
 
         // Wrap edge/inflow inserts and the address_evm_sources rollup in one
         // Postgres transaction so the batch is atomic and read-your-writes
@@ -177,6 +194,13 @@ impl Processable for AddressReputationStorer {
             message: format!("address_reputation batch txn failed: {e}"),
             query: None,
         })?;
+
+        // Forward LZ GUIDs to the enricher now that the bridge_inflows rows exist.
+        for guid in pending_guids {
+            if let Err(e) = self.guid_sender.send(guid) {
+                tracing::error!(err = ?e, "address_reputation: failed to forward lz_guid to enricher");
+            }
+        }
 
         debug!(
             "address_reputation: stored {} edges, {} inflows for versions [{}, {}]",

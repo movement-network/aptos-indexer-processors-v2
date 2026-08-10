@@ -187,8 +187,9 @@ impl ProcessorTrait for AddressReputationProcessor {
             ..self.config.transaction_stream_config.clone()
         })
         .await?;
-        let extractor = AddressReputationExtractor::new(registry, guid_sender, evm_sender);
-        let storer = AddressReputationStorer::new(self.db_pool.clone(), processor_config);
+        let extractor = AddressReputationExtractor::new(registry, evm_sender);
+        let storer =
+            AddressReputationStorer::new(self.db_pool.clone(), processor_config, guid_sender);
         let version_tracker = VersionTrackerStep::new(
             PostgresProcessorStatusSaver::new(self.config.clone(), self.db_pool.clone()),
             DEFAULT_UPDATE_PROCESSOR_STATUS_SECS,

@@ -39,22 +39,15 @@ pub type BridgeRegistry = Arc<Vec<BridgeRegistryEntry>>;
 
 pub struct AddressReputationExtractor {
     pub bridge_registry: BridgeRegistry,
-    /// Sends newly extracted LZ GUIDs to the background enricher loop for resolution.
-    pub guid_sender: UnboundedSender<String>,
     /// Sends directly-known EVM addresses (Circle USDCx, LZ compose) to the enricher
     /// loop for Hypernative screening without needing GUID resolution first.
     pub evm_sender: UnboundedSender<String>,
 }
 
 impl AddressReputationExtractor {
-    pub fn new(
-        bridge_registry: BridgeRegistry,
-        guid_sender: UnboundedSender<String>,
-        evm_sender: UnboundedSender<String>,
-    ) -> Self {
+    pub fn new(bridge_registry: BridgeRegistry, evm_sender: UnboundedSender<String>) -> Self {
         Self {
             bridge_registry,
-            guid_sender,
             evm_sender,
         }
     }
@@ -149,41 +142,37 @@ impl Processable for AddressReputationExtractor {
                         event_index,
                         block_timestamp,
                     ) {
-                    None => {
-                        tracing::warn!(
-                            txn_version,
-                            event_index,
-                            bridge_name = %entry.bridge_name,
-                            event_type = %type_str,
-                            "extractor: parse_bridge_event returned None for registered bridge event"
-                        );
-                    },
-                    Some(mut inflow) => {
-                        // Fall back to the transaction's payload when the event
-                        // itself doesn't carry EVM-side data.
-                        let kind = entry.payload_kind.as_deref();
-                        if inflow.evm_source.is_none() {
-                            inflow.evm_source = decode_payload_evm_source(txn, kind);
-                        }
-                        if inflow.lz_guid.is_none() {
-                            inflow.lz_guid = extract_payload_guid(txn, kind);
-                        }
-                        // Forward LZ GUIDs for resolution and directly-known EVM
-                        // addresses for Hypernative screening to the enricher loop.
-                        if let Some(guid) = inflow.lz_guid.as_ref() {
-                            if let Err(e) = self.guid_sender.send(guid.clone()) {
-                                tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                        None => {
+                            tracing::warn!(
+                                txn_version,
+                                event_index,
+                                bridge_name = %entry.bridge_name,
+                                event_type = %type_str,
+                                "extractor: parse_bridge_event returned None for registered bridge event"
+                            );
+                        },
+                        Some(mut inflow) => {
+                            // Fall back to the transaction's payload when the event
+                            // itself doesn't carry EVM-side data.
+                            let kind = entry.payload_kind.as_deref();
+                            if inflow.evm_source.is_none() {
+                                inflow.evm_source = decode_payload_evm_source(txn, kind);
                             }
-                        }
-                        // Forward Circle EVM address to update its score in the evm fetch loop
-                        if let Some(evm) = inflow.evm_source.as_ref() {
-                            if let Err(e) = self.evm_sender.send(evm.clone()) {
-                                tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                            if inflow.lz_guid.is_none() {
+                                inflow.lz_guid = extract_payload_guid(txn, kind);
                             }
-                        }
-                        txn_inflows.push(inflow);
-                        continue;
-                    }
+                            // Forward Circle / LZ-compose EVM address to update its score in the evm fetch loop.
+                            // NOTE: LZ GUIDs are NOT sent here — they are forwarded from the storer after
+                            // the bridge_inflows row is committed, to avoid a race where the enricher
+                            // resolves the GUID before the row exists.
+                            if let Some(evm) = inflow.evm_source.as_ref() {
+                                if let Err(e) = self.evm_sender.send(evm.clone()) {
+                                    tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                                }
+                            }
+                            txn_inflows.push(inflow);
+                            continue;
+                        },
                     }
                 }
 
@@ -373,7 +362,10 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
             let arg = match args.first() {
                 Some(a) => a,
                 None => {
-                    tracing::warn!(txn_version = txn.version, "circle_intent: no args in payload");
+                    tracing::warn!(
+                        txn_version = txn.version,
+                        "circle_intent: no args in payload"
+                    );
                     return None;
                 },
             };

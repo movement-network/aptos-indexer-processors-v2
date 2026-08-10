@@ -242,9 +242,8 @@ fn registry() -> Arc<Vec<BridgeRegistryEntry>> {
 
 #[tokio::test]
 async fn extractor_emits_bridge_head_and_owner_keyed_transfer() {
-    let (guid_tx, _guid_rx) = tokio::sync::mpsc::unbounded_channel();
     let (evm_tx, _evm_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut extractor = AddressReputationExtractor::new(registry(), guid_tx, evm_tx);
+    let mut extractor = AddressReputationExtractor::new(registry(), evm_tx);
     let input = TransactionContext {
         data: vec![make_mint_txn(), make_transfer_txn()],
         metadata: Default::default(),

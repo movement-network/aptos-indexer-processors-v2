@@ -170,7 +170,8 @@ fn _keep_stream_type() -> Option<TransactionStreamConfig> {
 #[tokio::test]
 async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
     let (_db, pool) = spin_up().await;
-    let mut storer = AddressReputationStorer::new(pool.clone(), config());
+    let (guid_tx, _guid_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut storer = AddressReputationStorer::new(pool.clone(), config(), guid_tx);
 
     // 1) Seed A with M=5 bridge inflows in one batch. Each delivers `amounts[i]`.
     let m: u32 = 5;
@@ -270,7 +271,8 @@ async fn propagates_m_evm_sources_from_a_to_b_in_one_batch() {
 #[tokio::test]
 async fn merges_overlapping_evm_sources_on_a_to_b() {
     let (_db, pool) = spin_up().await;
-    let mut storer = AddressReputationStorer::new(pool.clone(), config());
+    let (guid_tx, _guid_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut storer = AddressReputationStorer::new(pool.clone(), config(), guid_tx);
 
     // Seed A with E1..E5 (indices 1..=5), amount 100 each -> total 500.
     let a_amounts: Vec<u64> = (1..=5).map(|_| 100).collect();
