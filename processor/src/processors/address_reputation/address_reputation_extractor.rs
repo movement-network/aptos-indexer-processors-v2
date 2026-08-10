@@ -142,13 +142,23 @@ impl Processable for AddressReputationExtractor {
                     .iter()
                     .find(|e| e.enabled && e.event_type == type_str)
                 {
-                    if let Some(mut inflow) = parse_bridge_event(
+                    match parse_bridge_event(
                         event.data.as_str(),
                         entry,
                         txn_version,
                         event_index,
                         block_timestamp,
                     ) {
+                    None => {
+                        tracing::warn!(
+                            txn_version,
+                            event_index,
+                            bridge_name = %entry.bridge_name,
+                            event_type = %type_str,
+                            "extractor: parse_bridge_event returned None for registered bridge event"
+                        );
+                    },
+                    Some(mut inflow) => {
                         // Fall back to the transaction's payload when the event
                         // itself doesn't carry EVM-side data.
                         let kind = entry.payload_kind.as_deref();
@@ -173,6 +183,7 @@ impl Processable for AddressReputationExtractor {
                         }
                         txn_inflows.push(inflow);
                         continue;
+                    }
                     }
                 }
 
@@ -396,7 +407,22 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         // (compose-less) transfers where the 40-byte message carries no sender.
         // The LZ executor delivers packets via a Move script (ScriptPayload),
         // handled by the ScriptPayload arm above.
-        "layerzero_oft" => lz_payload::scan_args_for_oft_sender(args),
+        "layerzero_oft" => {
+            let result = lz_payload::scan_args_for_oft_sender(args);
+            if result.is_none() {
+                let arg_byte_lens: Vec<usize> = args
+                    .iter()
+                    .map(|a| a.strip_prefix("0x").unwrap_or(a).len() / 2)
+                    .collect();
+                tracing::debug!(
+                    txn_version = txn.version,
+                    args_count = args.len(),
+                    arg_byte_lens = ?arg_byte_lens,
+                    "layerzero_oft: no compose sender (standard transfer, evm_source=NULL)"
+                );
+            }
+            result
+        },
         _ => None,
     }
 }
@@ -417,7 +443,20 @@ fn extract_payload_guid(txn: &Transaction, kind: Option<&str>) -> Option<String>
         PayloadType::ScriptPayload(sp) => &sp.arguments,
         _ => return None,
     };
-    lz_payload::extract_guid_from_args(args)
+    let result = lz_payload::extract_guid_from_args(args);
+    if result.is_none() {
+        let arg_byte_lens: Vec<usize> = args
+            .iter()
+            .map(|a| a.strip_prefix("0x").unwrap_or(a).len() / 2)
+            .collect();
+        tracing::warn!(
+            txn_version = txn.version,
+            args_count = args.len(),
+            arg_byte_lens = ?arg_byte_lens,
+            "layerzero_oft: no GUID found in payload args — inflow stored without lz_guid, enricher skipped"
+        );
+    }
+    result
 }
 
 fn parse_bridge_event(

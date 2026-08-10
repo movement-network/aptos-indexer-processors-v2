@@ -90,6 +90,7 @@ impl LzEnricher {
 
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
+            warn!(lz_guid = guid, url = %url, "lz_enricher: GUID not found (404) — sentinel will be written");
             return Ok(None);
         }
         if !status.is_success() {

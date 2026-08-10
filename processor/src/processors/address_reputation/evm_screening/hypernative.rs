@@ -306,7 +306,10 @@ impl HypernativeClient {
 
         let data = match json.get("data").and_then(|d| d.as_array()) {
             Some(arr) => arr,
-            None => return Ok(results),
+            None => {
+                warn!(evm_count = to_process.len(), "hypernative: response missing 'data' array — dropping batch without retry");
+                return Ok(results);
+            },
         };
 
         // Parse all entries before caching: if any entry is malformed we return

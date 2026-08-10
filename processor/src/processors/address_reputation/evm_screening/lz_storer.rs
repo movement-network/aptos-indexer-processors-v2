@@ -124,12 +124,22 @@ impl LzDb for DbLzStore {
             },
         };
 
-        if rows.is_empty() || !self.propagate_evm || evm == EVM_NULL_SENTINEL {
+        if rows.is_empty() {
+            warn!(lz_guid = guid, evm_address = evm, "lz_enricher: UPDATE matched 0 rows — GUID not found in bridge_inflows or already resolved");
+            return;
+        }
+        if !self.propagate_evm || evm == EVM_NULL_SENTINEL {
             return;
         }
 
         for row in &rows {
             let Some(ref asset) = row.asset_type else {
+                warn!(
+                    lz_guid = guid,
+                    aptos_recipient = %row.aptos_recipient,
+                    transaction_version = row.transaction_version,
+                    "lz_enricher: bridge_inflows row has NULL asset_type — address_evm_sources seed skipped"
+                );
                 continue;
             };
             let ord = seen_ord(row.transaction_version, row.event_index);
