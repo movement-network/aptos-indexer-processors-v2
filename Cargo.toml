@@ -2,7 +2,7 @@
 
 resolver = "2"
 
-members = ["integration-tests", "processor"]
+members = ["integration-tests", "processor", "api/address_reputation"]
 
 [workspace.package]
 authors = ["Aptos Labs <opensource@aptoslabs.com>"]

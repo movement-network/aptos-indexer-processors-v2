@@ -1,0 +1,14 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+connection_string = "postgres://user:password@localhost:5432/indexer"
+pool_size = 5
+
+[auth]
+# Add as many API keys as needed. Requests must supply one in the X-Api-Key header.
+api_keys = [
+    "change-me-key-1",
+    "change-me-key-2",
+]
