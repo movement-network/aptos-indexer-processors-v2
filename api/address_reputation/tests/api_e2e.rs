@@ -16,7 +16,10 @@ use aptos_indexer_processor_sdk::{
     types::transaction_context::TransactionContext,
 };
 use bigdecimal::BigDecimal;
-use diesel::{sql_query, sql_types::{Bool, Numeric, Varchar}};
+use diesel::{
+    sql_query,
+    sql_types::{Bool, Numeric, Varchar},
+};
 use diesel_async::RunQueryDsl;
 use processor::{
     processors::address_reputation::{
@@ -40,10 +43,14 @@ const B_ADDR: &str = "0x00000000000000000000000000000000000000000000000000000000
 const API_KEY: &str = "test-api-key-e2e";
 
 // Three distinct EVM addresses used across tests.
-fn evm(i: u32) -> String { format!("0x{:040x}", 0x1000_0000u64 + i as u64) }
+fn evm(i: u32) -> String {
+    format!("0x{:040x}", 0x1000_0000u64 + i as u64)
+}
 
 fn ts() -> chrono::NaiveDateTime {
-    chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc()
+    chrono::DateTime::from_timestamp(1_700_000_000, 0)
+        .unwrap()
+        .naive_utc()
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +113,16 @@ fn storer_config() -> AddressReputationConfig {
 }
 
 /// Convenience: run a single storer batch.
-async fn store(storer: &mut AddressReputationStorer, edges: Vec<TransferEdge>, inflows: Vec<BridgeInflow>) {
+async fn store(
+    storer: &mut AddressReputationStorer,
+    edges: Vec<TransferEdge>,
+    inflows: Vec<BridgeInflow>,
+) {
     storer
-        .process(TransactionContext { data: (edges, inflows), metadata: Default::default() })
+        .process(TransactionContext {
+            data: (edges, inflows),
+            metadata: Default::default(),
+        })
         .await
         .expect("storer process")
         .expect("storer output");
@@ -214,7 +228,9 @@ async fn seed(sdk_pool: &ArcDbPool) {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-fn url(addr: SocketAddr, path: &str) -> String { format!("http://{addr}{path}") }
+fn url(addr: SocketAddr, path: &str) -> String {
+    format!("http://{addr}{path}")
+}
 
 async fn get(client: &reqwest::Client, addr: SocketAddr, path: &str) -> reqwest::Response {
     client
@@ -225,7 +241,12 @@ async fn get(client: &reqwest::Client, addr: SocketAddr, path: &str) -> reqwest:
         .unwrap()
 }
 
-async fn post(client: &reqwest::Client, addr: SocketAddr, path: &str, body: &Value) -> reqwest::Response {
+async fn post(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    path: &str,
+    body: &Value,
+) -> reqwest::Response {
     client
         .post(url(addr, path))
         .header("X-Api-Key", API_KEY)
@@ -296,11 +317,19 @@ async fn test_address_since() {
         assert!(row.get("transfer_fund").is_some());
         assert!(row.get("hops_min").is_some());
         assert!(row.get("inserted_at").is_some());
-        assert!(row.get("updated_at").is_some(), "updated_at must be present (used for the since filter)");
+        assert!(
+            row.get("updated_at").is_some(),
+            "updated_at must be present (used for the since filter)"
+        );
     }
 
     // since = far future → empty
-    let resp = get(&client, addr, "/v1/reputation/address/since?since=9999999999").await;
+    let resp = get(
+        &client,
+        addr,
+        "/v1/reputation/address/since?since=9999999999",
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body.as_array().unwrap().len(), 0);
@@ -321,7 +350,13 @@ async fn test_mvt_fetch() {
     let client = reqwest::Client::new();
 
     // Only A → 3 rows
-    let resp = post(&client, addr, "/v1/reputation/address/mvt_fetch", &Value::Array(vec![Value::String(A_ADDR.into())])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/address/mvt_fetch",
+        &Value::Array(vec![Value::String(A_ADDR.into())]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let rows: Value = resp.json().await.unwrap();
     let arr = rows.as_array().unwrap();
@@ -331,25 +366,58 @@ async fn test_mvt_fetch() {
 
     // A + B → 6 rows
     let resp = post(
-        &client, addr, "/v1/reputation/address/mvt_fetch",
-        &Value::Array(vec![Value::String(A_ADDR.into()), Value::String(B_ADDR.into())]),
-    ).await;
+        &client,
+        addr,
+        "/v1/reputation/address/mvt_fetch",
+        &Value::Array(vec![
+            Value::String(A_ADDR.into()),
+            Value::String(B_ADDR.into()),
+        ]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let arr: Value = resp.json().await.unwrap();
     assert_eq!(arr.as_array().unwrap().len(), 6);
 
     // Unknown address → empty (not an error)
     let resp = post(
-        &client, addr, "/v1/reputation/address/mvt_fetch",
-        &Value::Array(vec![Value::String("0x0000000000000000000000000000000000000000000000000000000000009999".into())]),
-    ).await;
+        &client,
+        addr,
+        "/v1/reputation/address/mvt_fetch",
+        &Value::Array(vec![Value::String(
+            "0x0000000000000000000000000000000000000000000000000000000000009999".into(),
+        )]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 0);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     // Empty body → empty array
-    let resp = post(&client, addr, "/v1/reputation/address/mvt_fetch", &Value::Array(vec![])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/address/mvt_fetch",
+        &Value::Array(vec![]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 0);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     handle.abort();
 }
@@ -371,7 +439,13 @@ async fn test_score_evms() {
     let client = reqwest::Client::new();
 
     // E1 only → 1 row with correct public fields
-    let resp = post(&client, addr, "/v1/reputation/score/evms", &Value::Array(vec![Value::String(evm(1))])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/evms",
+        &Value::Array(vec![Value::String(evm(1))]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let arr = resp.json::<Value>().await.unwrap();
     let rows = arr.as_array().unwrap();
@@ -380,22 +454,49 @@ async fn test_score_evms() {
     assert_eq!(rows[0]["recommendation"], "deny");
     assert_eq!(rows[0]["severity"], "high");
     // Internal bookkeeping fields must not appear in the response.
-    assert!(rows[0].get("to_be_updated").is_none(), "to_be_updated must not be exposed");
-    assert!(rows[0].get("fetched_at").is_none(), "fetched_at must not be exposed");
+    assert!(
+        rows[0].get("to_be_updated").is_none(),
+        "to_be_updated must not be exposed"
+    );
+    assert!(
+        rows[0].get("fetched_at").is_none(),
+        "fetched_at must not be exposed"
+    );
 
     // E1 + E2 + E3 → 2 rows (E3 has no entry)
     let resp = post(
-        &client, addr, "/v1/reputation/score/evms",
-        &Value::Array(vec![Value::String(evm(1)), Value::String(evm(2)), Value::String(evm(3))]),
-    ).await;
+        &client,
+        addr,
+        "/v1/reputation/score/evms",
+        &Value::Array(vec![
+            Value::String(evm(1)),
+            Value::String(evm(2)),
+            Value::String(evm(3)),
+        ]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let rows = resp.json::<Value>().await.unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 2, "E3 has no score entry");
 
     // Empty → empty
-    let resp = post(&client, addr, "/v1/reputation/score/evms", &Value::Array(vec![])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/evms",
+        &Value::Array(vec![]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 0);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     handle.abort();
 }
@@ -422,24 +523,43 @@ async fn test_score_mvts() {
     let client = reqwest::Client::new();
 
     // A_ADDR: top EVM is E1 (score=1), transfer_fund = SUM(A.transfer_fund)+E1.evm_fund = 0+500 = 500
-    let resp = post(&client, addr, "/v1/reputation/score/mvts", &Value::Array(vec![Value::String(A_ADDR.into())])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/mvts",
+        &Value::Array(vec![Value::String(A_ADDR.into())]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let rows = resp.json::<Value>().await.unwrap();
     let arr = rows.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     let a_row = &arr[0];
     assert_eq!(a_row["movement_address"], A_ADDR);
-    assert_eq!(a_row["evm_address"], evm(1), "E1 has the highest risk score");
+    assert_eq!(
+        a_row["evm_address"],
+        evm(1),
+        "E1 has the highest risk score"
+    );
     assert_eq!(a_row["recommendation"], "deny");
     assert_eq!(a_row["severity"], "high");
     // transfer_fund = SUM(all A.transfer_fund=0) + E1.evm_fund(500) = 500
     let tf: f64 = a_row["transfer_fund"].as_str().unwrap().parse().unwrap();
-    assert!((tf - 500.0).abs() < 0.001, "A transfer_fund should be 500, got {tf}");
+    assert!(
+        (tf - 500.0).abs() < 0.001,
+        "A transfer_fund should be 500, got {tf}"
+    );
 
     // B_ADDR: top EVM is E1 (score=1); B has no evm_fund, only transfer_fund from the propagation.
     // transfer_fund = SUM(B.transfer_fund) + E1.evm_fund(0).
     // B.transfer_fund for E1 = 500 * 500/1000 * 1 = 250 (with ROUND(...,9) precision).
-    let resp = post(&client, addr, "/v1/reputation/score/mvts", &Value::Array(vec![Value::String(B_ADDR.into())])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/mvts",
+        &Value::Array(vec![Value::String(B_ADDR.into())]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
     let arr = resp.json::<Value>().await.unwrap();
     let b_row = &arr[0];
@@ -447,28 +567,72 @@ async fn test_score_mvts() {
     assert_eq!(b_row["evm_address"], evm(1));
     // SUM(B.transfer_fund) = 250+150+100 = 500; top EVM evm_fund = 0 → total = 500
     let tf: f64 = b_row["transfer_fund"].as_str().unwrap().parse().unwrap();
-    assert!((tf - 500.0).abs() < 0.001, "B transfer_fund should be 500, got {tf}");
+    assert!(
+        (tf - 500.0).abs() < 0.001,
+        "B transfer_fund should be 500, got {tf}"
+    );
 
     // A + B together → 2 rows, one per mvt address
     let resp = post(
-        &client, addr, "/v1/reputation/score/mvts",
-        &Value::Array(vec![Value::String(A_ADDR.into()), Value::String(B_ADDR.into())]),
-    ).await;
+        &client,
+        addr,
+        "/v1/reputation/score/mvts",
+        &Value::Array(vec![
+            Value::String(A_ADDR.into()),
+            Value::String(B_ADDR.into()),
+        ]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 2);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     // Unknown address → empty
     let resp = post(
-        &client, addr, "/v1/reputation/score/mvts",
-        &Value::Array(vec![Value::String("0x0000000000000000000000000000000000000000000000000000000000009999".into())]),
-    ).await;
+        &client,
+        addr,
+        "/v1/reputation/score/mvts",
+        &Value::Array(vec![Value::String(
+            "0x0000000000000000000000000000000000000000000000000000000000009999".into(),
+        )]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 0);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     // Empty → empty
-    let resp = post(&client, addr, "/v1/reputation/score/mvts", &Value::Array(vec![])).await;
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/mvts",
+        &Value::Array(vec![]),
+    )
+    .await;
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.json::<Value>().await.unwrap().as_array().unwrap().len(), 0);
+    assert_eq!(
+        resp.json::<Value>()
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     handle.abort();
 }
@@ -487,47 +651,97 @@ async fn test_address_validation() {
     let (addr, handle) = spawn_server(api_pool).await;
     let client = reqwest::Client::new();
 
-    let valid_mvt = A_ADDR;        // 0x + 64 hex chars
-    let valid_evm = evm(1);        // 0x + 40 hex chars
+    let valid_mvt = A_ADDR; // 0x + 64 hex chars
+    let valid_evm = evm(1); // 0x + 40 hex chars
 
-    let no_prefix    = &valid_mvt[2..];              // missing 0x prefix
-    let too_short    = "0x00a1";                     // far too short for either type
-    let mvt_too_long = format!("{valid_mvt}ff");     // 0x + 66 hex  (2 extra chars)
-    let mvt_bad_ch   = format!("0x{}", "zz".repeat(32)); // right length, non-hex content
-    let evm_too_long = format!("{valid_evm}ff");     // 0x + 42 hex  (2 extra chars)
-    let evm_bad_ch   = format!("0x{}", "zz".repeat(20)); // right length, non-hex content
+    let no_prefix = &valid_mvt[2..]; // missing 0x prefix
+    let too_short = "0x00a1"; // far too short for either type
+    let mvt_too_long = format!("{valid_mvt}ff"); // 0x + 66 hex  (2 extra chars)
+    let mvt_bad_ch = format!("0x{}", "zz".repeat(32)); // right length, non-hex content
+    let evm_too_long = format!("{valid_evm}ff"); // 0x + 42 hex  (2 extra chars)
+    let evm_bad_ch = format!("0x{}", "zz".repeat(20)); // right length, non-hex content
 
     // --- mvt_fetch and score/mvts: invalid Movement addresses → 400 ---
-    for endpoint in &["/v1/reputation/address/mvt_fetch", "/v1/reputation/score/mvts"] {
-        for bad in &[no_prefix, too_short, mvt_too_long.as_str(), mvt_bad_ch.as_str()] {
-            let resp = post(&client, addr, endpoint,
-                &Value::Array(vec![Value::String((*bad).to_string())])).await;
+    for endpoint in &[
+        "/v1/reputation/address/mvt_fetch",
+        "/v1/reputation/score/mvts",
+    ] {
+        for bad in &[
+            no_prefix,
+            too_short,
+            mvt_too_long.as_str(),
+            mvt_bad_ch.as_str(),
+        ] {
+            let resp = post(
+                &client,
+                addr,
+                endpoint,
+                &Value::Array(vec![Value::String((*bad).to_string())]),
+            )
+            .await;
             assert_eq!(resp.status(), 400, "{endpoint} should reject: {bad:?}");
         }
         // valid address → 200
-        let resp = post(&client, addr, endpoint,
-            &Value::Array(vec![Value::String(valid_mvt.into())])).await;
-        assert_eq!(resp.status(), 200, "{endpoint} should accept a valid movement address");
+        let resp = post(
+            &client,
+            addr,
+            endpoint,
+            &Value::Array(vec![Value::String(valid_mvt.into())]),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            200,
+            "{endpoint} should accept a valid movement address"
+        );
     }
 
     // --- score/evms: invalid EVM addresses → 400 ---
-    for bad in &[no_prefix, too_short, evm_too_long.as_str(), evm_bad_ch.as_str()] {
-        let resp = post(&client, addr, "/v1/reputation/score/evms",
-            &Value::Array(vec![Value::String((*bad).to_string())])).await;
+    for bad in &[
+        no_prefix,
+        too_short,
+        evm_too_long.as_str(),
+        evm_bad_ch.as_str(),
+    ] {
+        let resp = post(
+            &client,
+            addr,
+            "/v1/reputation/score/evms",
+            &Value::Array(vec![Value::String((*bad).to_string())]),
+        )
+        .await;
         assert_eq!(resp.status(), 400, "score/evms should reject: {bad:?}");
     }
     // valid EVM address → 200
-    let resp = post(&client, addr, "/v1/reputation/score/evms",
-        &Value::Array(vec![Value::String(valid_evm)])).await;
-    assert_eq!(resp.status(), 200, "score/evms should accept a valid evm address");
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/score/evms",
+        &Value::Array(vec![Value::String(valid_evm)]),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        200,
+        "score/evms should accept a valid evm address"
+    );
 
     // --- one good + one bad in the same list → 400 (first-bad-wins) ---
-    let resp = post(&client, addr, "/v1/reputation/address/mvt_fetch",
+    let resp = post(
+        &client,
+        addr,
+        "/v1/reputation/address/mvt_fetch",
         &Value::Array(vec![
             Value::String(valid_mvt.into()),
             Value::String(too_short.into()),
-        ])).await;
-    assert_eq!(resp.status(), 400, "a single invalid address in a list must reject the whole request");
+        ]),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "a single invalid address in a list must reject the whole request"
+    );
 
     handle.abort();
 }

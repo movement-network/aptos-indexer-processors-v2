@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use address_reputation_api::{config, db, routes};
-
 use clap::Parser;
 use std::{collections::HashSet, sync::Arc};
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "address-reputation-api", about = "REST API for address reputation data")]
+#[command(
+    name = "address-reputation-api",
+    about = "REST API for address reputation data"
+)]
 struct Cli {
     /// Path to the TOML configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -37,7 +39,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let pool = Arc::new(
-        db::new_pool(&config.database.connection_string, config.database.pool_size).await?,
+        db::new_pool(
+            &config.database.connection_string,
+            config.database.pool_size,
+        )
+        .await?,
     );
 
     let api_keys: HashSet<String> = config.auth.api_keys.into_iter().collect();

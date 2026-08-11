@@ -30,8 +30,12 @@ pub struct AuthConfig {
     pub api_keys: Vec<String>,
 }
 
-fn default_host() -> String { "0.0.0.0".to_string() }
-fn default_pool_size() -> u32 { 5 }
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+fn default_pool_size() -> u32 {
+    5
+}
 
 impl Config {
     pub fn from_file(path: &str) -> anyhow::Result<Self> {

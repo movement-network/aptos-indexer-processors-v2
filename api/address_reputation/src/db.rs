@@ -12,7 +12,6 @@ use diesel_async::{
     pooled_connection::{bb8::Pool, AsyncDieselConnectionManager},
     AsyncPgConnection, RunQueryDsl,
 };
-
 // `Pool<AsyncPgConnection>` expands to
 // `bb8::Pool<AsyncDieselConnectionManager<AsyncPgConnection>>` internally.
 // Do NOT write Pool<AsyncDieselConnectionManager<AsyncPgConnection>> — that

@@ -1,6 +1,7 @@
 // Copyright © MoveIndustries
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::db::{self, DbPool};
 use axum::{
     extract::{Query, Request, State},
     http::StatusCode,
@@ -13,24 +14,18 @@ use serde::Deserialize;
 use std::{collections::HashSet, sync::Arc};
 use tracing::{error, info, warn};
 
-use crate::db::{self, DbPool};
-
 // ---------------------------------------------------------------------------
 // Address validation
 // ---------------------------------------------------------------------------
 
 /// Movement (Aptos) address: `0x` + exactly 64 lowercase or uppercase hex chars.
 fn is_valid_mvt_address(addr: &str) -> bool {
-    addr.len() == 66
-        && addr.starts_with("0x")
-        && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())
+    addr.len() == 66 && addr.starts_with("0x") && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// EVM address: `0x` + exactly 40 lowercase or uppercase hex chars.
 fn is_valid_evm_address(addr: &str) -> bool {
-    addr.len() == 42
-        && addr.starts_with("0x")
-        && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())
+    addr.len() == 42 && addr.starts_with("0x") && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn bad_address(addr: &str, kind: &str) -> Response {
@@ -74,17 +69,10 @@ pub fn build_router(state: AppState) -> Router {
 // API key middleware
 // ---------------------------------------------------------------------------
 
-pub async fn auth_middleware(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let key = req
-        .headers()
-        .get("X-Api-Key")
-        .and_then(|v| v.to_str().ok());
+pub async fn auth_middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let key = req.headers().get("X-Api-Key").and_then(|v| v.to_str().ok());
 
-    if key.map_or(false, |k| state.api_keys.contains(k)) {
+    if key.is_some_and(|k| state.api_keys.contains(k)) {
         next.run(req).await
     } else {
         warn!(
@@ -171,10 +159,7 @@ async fn handle_mvt_fetch(
     }
 }
 
-async fn handle_evms(
-    State(state): State<AppState>,
-    Json(addrs): Json<Vec<String>>,
-) -> Response {
+async fn handle_evms(State(state): State<AppState>, Json(addrs): Json<Vec<String>>) -> Response {
     if addrs.is_empty() {
         return Json(serde_json::json!([])).into_response();
     }
@@ -201,10 +186,7 @@ async fn handle_evms(
     }
 }
 
-async fn handle_mvts(
-    State(state): State<AppState>,
-    Json(addrs): Json<Vec<String>>,
-) -> Response {
+async fn handle_mvts(State(state): State<AppState>, Json(addrs): Json<Vec<String>>) -> Response {
     if addrs.is_empty() {
         return Json(serde_json::json!([])).into_response();
     }
