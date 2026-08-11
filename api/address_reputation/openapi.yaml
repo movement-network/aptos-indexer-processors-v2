@@ -68,6 +68,7 @@ components:
         - transfer_fund
         - hops_min
         - inserted_at
+        - updated_at
       properties:
         movement_address:
           $ref: '#/components/schemas/MovementAddress'
@@ -93,8 +94,13 @@ components:
         inserted_at:
           type: string
           format: date-time
-          description: UTC timestamp of row creation (not updated on subsequent UPSERTs).
+          description: UTC timestamp of row creation. Never changes after the first insert.
           example: "2023-11-14T22:13:20"
+        updated_at:
+          type: string
+          format: date-time
+          description: UTC timestamp of the last time this row was written (insert or UPSERT update).
+          example: "2023-11-15T10:00:00"
 
     EvmRiskScoreRow:
       type: object
@@ -108,8 +114,6 @@ components:
         - source
         - recommendation
         - severity
-        - to_be_updated
-        - fetched_at
         - inserted_at
       properties:
         evm_address:
@@ -134,17 +138,6 @@ components:
           type: string
           description: Severity level associated with this score.
           example: "high"
-        to_be_updated:
-          type: boolean
-          description: |
-            `true` when this record needs a fresh screening pass (e.g. the previous fetch
-            failed or returned an error score). The background screener will retry these
-            addresses on the next cycle.
-        fetched_at:
-          type: string
-          format: date-time
-          description: UTC timestamp of the last successful screening fetch.
-          example: "2023-11-14T22:13:20"
         inserted_at:
           type: string
           format: date-time
@@ -224,11 +217,12 @@ paths:
     get:
       summary: List EVM source rows inserted on or after a timestamp
       description: |
-        Returns all `address_evm_sources` rows whose `inserted_at` is ≥ `since`.
+        Returns all `address_evm_sources` rows whose `updated_at` is ≥ `since`.
         Use `since=0` to retrieve every row.
 
-        Note: `inserted_at` is recorded at row creation and is **not** updated on
-        subsequent UPSERTs. This endpoint reflects first-seen time, not last-modified time.
+        `updated_at` is set to `NOW()` on every insert and on every UPSERT update,
+        so this endpoint reflects the last time each row was written — use it to
+        poll for incremental changes since a known checkpoint.
       operationId: getAddressSince
       parameters:
         - name: since
@@ -241,7 +235,7 @@ paths:
             example: 1700000000
       responses:
         '200':
-          description: Array of EVM-source rows ordered by `(inserted_at, movement_address, evm_address)`. May be empty.
+          description: Array of EVM-source rows ordered by `(updated_at, movement_address, evm_address)`. May be empty.
           content:
             application/json:
               schema:

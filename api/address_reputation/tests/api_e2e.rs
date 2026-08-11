@@ -271,7 +271,8 @@ async fn test_auth_rejection() {
 /// Tests `GET /v1/reputation/address/since?since=<unix_ts>`.
 /// Seeds the DB with 3 bridge inflows for A and one A→B transfer that propagates
 /// 3 EVM sources to B (6 rows total in `address_evm_sources`).
-/// - `since=0` must return all 6 rows with the expected JSON fields present.
+/// - `since=0` must return all 6 rows; every row must expose `updated_at`
+///   (the last-write timestamp used for the filter) as well as `inserted_at`.
 /// - `since=<far future>` must return an empty array (no rows match the filter).
 #[tokio::test]
 async fn test_address_since() {
@@ -287,13 +288,15 @@ async fn test_address_since() {
     let rows = body.as_array().unwrap();
     assert_eq!(rows.len(), 6, "expected 6 rows total (3 for A, 3 for B)");
 
-    // All rows should have the required fields
+    // All rows must expose the required fields, including both timestamps.
     for row in rows {
         assert!(row.get("movement_address").is_some());
         assert!(row.get("evm_address").is_some());
         assert!(row.get("evm_fund").is_some());
         assert!(row.get("transfer_fund").is_some());
         assert!(row.get("hops_min").is_some());
+        assert!(row.get("inserted_at").is_some());
+        assert!(row.get("updated_at").is_some(), "updated_at must be present (used for the since filter)");
     }
 
     // since = far future → empty
@@ -355,6 +358,8 @@ async fn test_mvt_fetch() {
 /// The seed inserts risk scores for E1 (score=1, deny/high) and E2 (score=0, approve/medium)
 /// but not for E3.
 /// - Querying E1 alone returns 1 row with the correct recommendation and severity fields.
+/// - The internal bookkeeping fields `to_be_updated` and `fetched_at` must be absent from
+///   the response — they are stored in the DB but not exposed by the API.
 /// - Querying E1+E2+E3 returns only 2 rows — E3 is absent because it has no entry in
 ///   `evm_address_risk_scores` and the endpoint does an inner-style lookup.
 /// - An empty body returns an empty array.
@@ -365,7 +370,7 @@ async fn test_score_evms() {
     let (addr, handle) = spawn_server(api_pool).await;
     let client = reqwest::Client::new();
 
-    // E1 only → 1 row
+    // E1 only → 1 row with correct public fields
     let resp = post(&client, addr, "/v1/reputation/score/evms", &Value::Array(vec![Value::String(evm(1))])).await;
     assert_eq!(resp.status(), 200);
     let arr = resp.json::<Value>().await.unwrap();
@@ -374,6 +379,9 @@ async fn test_score_evms() {
     assert_eq!(rows[0]["evm_address"], evm(1));
     assert_eq!(rows[0]["recommendation"], "deny");
     assert_eq!(rows[0]["severity"], "high");
+    // Internal bookkeeping fields must not appear in the response.
+    assert!(rows[0].get("to_be_updated").is_none(), "to_be_updated must not be exposed");
+    assert!(rows[0].get("fetched_at").is_none(), "fetched_at must not be exposed");
 
     // E1 + E2 + E3 → 2 rows (E3 has no entry)
     let resp = post(

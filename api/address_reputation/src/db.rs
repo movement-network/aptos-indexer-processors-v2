@@ -6,7 +6,7 @@ use bigdecimal::BigDecimal;
 use chrono::NaiveDateTime;
 use diesel::{
     sql_query,
-    sql_types::{Array, Bool, Numeric, Text, Timestamp, Varchar},
+    sql_types::{Array, Numeric, Text, Timestamp, Varchar},
 };
 use diesel_async::{
     pooled_connection::{bb8::Pool, AsyncDieselConnectionManager},
@@ -54,6 +54,8 @@ pub struct AesRow {
     pub hops_min: i32,
     #[diesel(sql_type = Timestamp)]
     pub inserted_at: NaiveDateTime,
+    #[diesel(sql_type = Timestamp)]
+    pub updated_at: NaiveDateTime,
 }
 
 #[derive(diesel::QueryableByName, Serialize, Debug)]
@@ -70,10 +72,6 @@ pub struct ErsRow {
     pub recommendation: String,
     #[diesel(sql_type = Varchar)]
     pub severity: String,
-    #[diesel(sql_type = Bool)]
-    pub to_be_updated: bool,
-    #[diesel(sql_type = Timestamp)]
-    pub fetched_at: NaiveDateTime,
     #[diesel(sql_type = Timestamp)]
     pub inserted_at: NaiveDateTime,
 }
@@ -108,10 +106,10 @@ pub async fn query_since(pool: &DbPool, since: NaiveDateTime) -> Result<Vec<AesR
     let mut conn = pool.get().await?;
     Ok(sql_query(
         "SELECT movement_address, asset_type, evm_address, \
-                evm_fund, transfer_fund, hops_min, inserted_at \
+                evm_fund, transfer_fund, hops_min, inserted_at, updated_at \
            FROM address_evm_sources \
-          WHERE inserted_at >= $1 \
-          ORDER BY inserted_at, movement_address, evm_address",
+          WHERE updated_at >= $1 \
+          ORDER BY updated_at, movement_address, evm_address",
     )
     .bind::<Timestamp, _>(since)
     .get_results(&mut conn)
@@ -123,7 +121,7 @@ pub async fn query_mvt_fetch(pool: &DbPool, addrs: Vec<String>) -> Result<Vec<Ae
     let mut conn = pool.get().await?;
     Ok(sql_query(
         "SELECT movement_address, asset_type, evm_address, \
-                evm_fund, transfer_fund, hops_min, inserted_at \
+                evm_fund, transfer_fund, hops_min, inserted_at, updated_at \
            FROM address_evm_sources \
           WHERE movement_address = ANY($1) \
           ORDER BY movement_address, evm_address",
@@ -138,7 +136,7 @@ pub async fn query_evms(pool: &DbPool, addrs: Vec<String>) -> Result<Vec<ErsRow>
     let mut conn = pool.get().await?;
     Ok(sql_query(
         "SELECT evm_address, risk_score, risk_label, source, \
-                recommendation, severity, to_be_updated, fetched_at, inserted_at \
+                recommendation, severity, inserted_at \
            FROM evm_address_risk_scores \
           WHERE evm_address = ANY($1) \
           ORDER BY evm_address",
