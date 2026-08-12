@@ -289,6 +289,24 @@ async fn test_auth_rejection() {
     handle.abort();
 }
 
+/// Verifies that `GET /v1/health` is publicly accessible (no API key) and returns
+/// `{"status": "ok"}` with HTTP 200 when the database is reachable.
+#[tokio::test]
+async fn test_health_ok() {
+    let (_pg, _, api_pool) = spin_up().await;
+    let (addr, handle) = spawn_server(api_pool).await;
+    let client = reqwest::Client::new();
+
+    // No X-Api-Key header — the health endpoint is public.
+    let resp = client.get(url(addr, "/v1/reputation/health")).send().await.unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+
+    handle.abort();
+}
+
 /// Tests `GET /v1/reputation/address/since?since=<unix_ts>`.
 /// Seeds the DB with 3 bridge inflows for A and one A→B transfer that propagates
 /// 3 EVM sources to B (6 rows total in `address_evm_sources`).

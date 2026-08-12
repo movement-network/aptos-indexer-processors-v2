@@ -53,7 +53,8 @@ pub struct AppState {
 // ---------------------------------------------------------------------------
 
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    // Protected routes require a valid X-Api-Key header.
+    let protected = Router::new()
         .route("/v1/reputation/address/since", get(handle_since))
         .route("/v1/reputation/address/mvt_fetch", post(handle_mvt_fetch))
         .route("/v1/reputation/score/evms", post(handle_evms))
@@ -61,7 +62,12 @@ pub fn build_router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
-        ))
+        ));
+
+    // Health check is public — no API key required.
+    Router::new()
+        .route("/v1/reputation/health", get(handle_health))
+        .merge(protected)
         .with_state(state)
 }
 
@@ -182,6 +188,20 @@ async fn handle_evms(State(state): State<AppState>, Json(addrs): Json<Vec<String
         Err(e) => {
             error!(err = %e, "score/evms: query failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        },
+    }
+}
+
+async fn handle_health(State(state): State<AppState>) -> Response {
+    match db::ping(&state.pool).await {
+        Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
+        Err(e) => {
+            error!(err = %e, "health: DB ping failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"status": "error", "detail": "db unavailable"})),
+            )
+                .into_response()
         },
     }
 }

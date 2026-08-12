@@ -96,6 +96,13 @@ pub struct MvtScoreRow {
 // Queries
 // ---------------------------------------------------------------------------
 
+/// Executes a trivial query to verify the DB connection is alive.
+pub async fn ping(pool: &DbPool) -> Result<()> {
+    let mut conn = pool.get().await?;
+    sql_query("SELECT 1").execute(&mut conn).await?;
+    Ok(())
+}
+
 /// Returns all `address_evm_sources` rows inserted on or after `since`.
 ///
 /// Note: `inserted_at` records the row's first creation time; rows updated via
