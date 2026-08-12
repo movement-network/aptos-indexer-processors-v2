@@ -298,7 +298,11 @@ async fn test_health_ok() {
     let client = reqwest::Client::new();
 
     // No X-Api-Key header — the health endpoint is public.
-    let resp = client.get(url(addr, "/v1/reputation/health")).send().await.unwrap();
+    let resp = client
+        .get(url(addr, "/v1/reputation/health"))
+        .send()
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
