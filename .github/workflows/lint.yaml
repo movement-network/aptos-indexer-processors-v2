@@ -22,6 +22,8 @@ jobs:
       # Ensures to use the Rust toolchain version
       - uses: dsherret/rust-toolchain-file@v1
       - name: Install deps and run linter
+        env:
+          RUST_MIN_STACK: 67108864
         run: |
           sudo apt update && sudo apt install libdw-dev
           cargo install cargo-sort
