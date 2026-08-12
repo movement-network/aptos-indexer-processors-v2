@@ -11,7 +11,11 @@ xclippy = [
   "-Aclippy::result-large-err",
   "-Aclippy::mutable-key-type",
   "-Wclippy::needless-borrow",
+  "-Aclippy::redundant-field-names",
+  "-Aclippy::double-must-use",
 ]
+# Aclippy::redundant-field-names and -Aclippy::double-must-use Added because of the nightly-2026-08-11 bug.
+# Allow to pass clippy in CI. Remove when the bug is corrected
 
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
