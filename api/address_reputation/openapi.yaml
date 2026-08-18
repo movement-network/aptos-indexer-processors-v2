@@ -1,0 +1,389 @@
+openapi: 3.0.3
+
+info:
+  title: Address Reputation API
+  description: |
+    REST API providing EVM fund-provenance and risk-score data for Movement (Aptos)
+    and EVM addresses.
+
+    All endpoints require an API key supplied in the `X-Api-Key` request header.
+
+    **Address formats**
+    - Movement address: `0x` + 64 hex characters (32 bytes), e.g. `0x000...00a1`
+    - EVM address: `0x` + 40 hex characters (20 bytes), e.g. `0x000...0001`
+
+    Requests that contain addresses not matching these formats are rejected with HTTP 400
+    before any database query is issued.
+
+    **Decimal fields** (`evm_fund`, `transfer_fund`, `risk_score`) are serialized as
+    decimal strings to preserve arbitrary precision, e.g. `"500.000000000"`.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+
+components:
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: API key provisioned in the server configuration file under `[auth] api_keys`.
+
+  schemas:
+
+    MovementAddress:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{64}$'
+      description: Movement (Aptos) address — `0x` prefix followed by exactly 64 hex characters.
+      example: "0x00000000000000000000000000000000000000000000000000000000000000a1"
+
+    EvmAddress:
+      type: string
+      pattern: '^0x[0-9a-fA-F]{40}$'
+      description: EVM address — `0x` prefix followed by exactly 40 hex characters.
+      example: "0x0000000000000000000000001000000100000001"
+
+    AddressEvmSourceRow:
+      type: object
+      description: |
+        One row from `address_evm_sources`.
+        Represents the attribution of a specific EVM address to a Movement address for a
+        given asset type.
+
+        - `evm_fund`: cumulative amount deposited directly via bridge inflows from this EVM address.
+        - `transfer_fund`: cumulative weighted attribution received through on-chain transfers.
+        - `hops_min`: minimum number of transfer hops between the EVM source and this address
+          (0 = direct bridge inflow).
+      required:
+        - movement_address
+        - asset_type
+        - evm_address
+        - evm_fund
+        - transfer_fund
+        - hops_min
+        - inserted_at
+        - updated_at
+      properties:
+        movement_address:
+          $ref: '#/components/schemas/MovementAddress'
+        asset_type:
+          type: string
+          description: Fully-qualified asset type string on Movement.
+          example: "0x0000000000000000000000000000000000000000000000000000000000000aaa"
+        evm_address:
+          $ref: '#/components/schemas/EvmAddress'
+        evm_fund:
+          type: string
+          description: Decimal string. Cumulative amount deposited directly from this EVM address via bridge inflows.
+          example: "500.000000000"
+        transfer_fund:
+          type: string
+          description: Decimal string. Cumulative weighted attribution received through Movement transfers.
+          example: "250.000000000"
+        hops_min:
+          type: integer
+          format: int32
+          description: Minimum hop count from the EVM source to this address (0 = direct inflow).
+          example: 0
+        inserted_at:
+          type: string
+          format: date-time
+          description: UTC timestamp of row creation. Never changes after the first insert.
+          example: "2023-11-14T22:13:20"
+        updated_at:
+          type: string
+          format: date-time
+          description: UTC timestamp of the last time this row was written (insert or UPSERT update).
+          example: "2023-11-15T10:00:00"
+
+    EvmRiskScoreRow:
+      type: object
+      description: |
+        One row from `evm_address_risk_scores`.
+        Screening result produced by Hypernative for a given EVM address.
+      required:
+        - evm_address
+        - risk_score
+        - risk_label
+        - source
+        - recommendation
+        - severity
+        - inserted_at
+      properties:
+        evm_address:
+          $ref: '#/components/schemas/EvmAddress'
+        risk_score:
+          type: string
+          description: Decimal string in [0, 1]. 0 = safe, 1 = highest risk.
+          example: "0.95"
+        risk_label:
+          type: string
+          description: Human-readable risk category label assigned by the screener.
+          example: "high_risk"
+        source:
+          type: string
+          description: Screening provider that produced this score.
+          example: "hypernative"
+        recommendation:
+          type: string
+          description: Suggested action for addresses with this score.
+          example: "deny"
+        severity:
+          type: string
+          description: Severity level associated with this score.
+          example: "high"
+        inserted_at:
+          type: string
+          format: date-time
+          description: UTC timestamp of row creation.
+          example: "2023-11-14T22:13:20"
+
+    MvtScoreRow:
+      type: object
+      description: |
+        Aggregated risk summary for a Movement address.
+
+        The query selects the single EVM source with the highest `risk_score` for each
+        Movement address (ties broken by `evm_address` ascending). The returned
+        `transfer_fund` equals `SUM(transfer_fund over all EVM sources)` plus `evm_fund`
+        of that top EVM source.
+
+        Movement addresses that have no row in `address_evm_sources` are omitted from
+        the response rather than returned with null fields.
+      required:
+        - movement_address
+        - evm_address
+        - risk_score
+        - recommendation
+        - severity
+        - transfer_fund
+      properties:
+        movement_address:
+          $ref: '#/components/schemas/MovementAddress'
+        evm_address:
+          $ref: '#/components/schemas/EvmAddress'
+          description: EVM source carrying the highest risk score for this Movement address.
+        risk_score:
+          type: string
+          description: Decimal string. Risk score of the highest-risk EVM source (0 when no score entry exists).
+          example: "0.95"
+        recommendation:
+          type: string
+          description: Recommendation for the highest-risk EVM source (empty string when no score entry exists).
+          example: "deny"
+        severity:
+          type: string
+          description: Severity of the highest-risk EVM source (empty string when no score entry exists).
+          example: "high"
+        transfer_fund:
+          type: string
+          description: |
+            Decimal string. Combined exposure figure:
+            SUM(transfer_fund for all EVM sources of this address) + evm_fund of the top EVM source.
+          example: "500.000000000"
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+          example: "invalid movement address: \"0x1234\""
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid `X-Api-Key` header.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: "unauthorized"
+
+    InternalError:
+      description: Unexpected database or server error.
+
+paths:
+
+  /v1/reputation/address/since:
+    get:
+      summary: List EVM source rows inserted on or after a timestamp
+      description: |
+        Returns all `address_evm_sources` rows whose `updated_at` is ≥ `since`.
+        Use `since=0` to retrieve every row.
+
+        `updated_at` is set to `NOW()` on every insert and on every UPSERT update,
+        so this endpoint reflects the last time each row was written — use it to
+        poll for incremental changes since a known checkpoint.
+      operationId: getAddressSince
+      parameters:
+        - name: since
+          in: query
+          required: true
+          description: Unix timestamp in seconds. Rows with `inserted_at >= since` are returned.
+          schema:
+            type: integer
+            format: int64
+            example: 1700000000
+      responses:
+        '200':
+          description: Array of EVM-source rows ordered by `(updated_at, movement_address, evm_address)`. May be empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AddressEvmSourceRow'
+        '400':
+          description: The `since` value is not a valid Unix timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "invalid 'since' unix timestamp"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/reputation/address/mvt_fetch:
+    post:
+      summary: Fetch all EVM sources for a list of Movement addresses
+      description: |
+        Returns every `address_evm_sources` row for the given Movement addresses.
+        Each address may produce multiple rows (one per EVM source / asset type pair).
+        Addresses with no rows are silently omitted.
+        An empty request body returns an empty array without querying the database.
+      operationId: postAddressMvtFetch
+      requestBody:
+        required: true
+        description: JSON array of Movement addresses to query. Must be non-empty to trigger a DB lookup.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/MovementAddress'
+            example:
+              - "0x00000000000000000000000000000000000000000000000000000000000000a1"
+              - "0x00000000000000000000000000000000000000000000000000000000000000b2"
+      responses:
+        '200':
+          description: Array of EVM-source rows ordered by `(movement_address, evm_address)`. May be empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AddressEvmSourceRow'
+        '400':
+          description: |
+            One or more addresses failed validation. The response identifies the first
+            offending address. The entire request is rejected — no partial results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "invalid movement address: \"0x1234\""
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/reputation/score/evms:
+    post:
+      summary: Fetch risk scores for a list of EVM addresses
+      description: |
+        Returns `evm_address_risk_scores` rows for the given EVM addresses.
+        Only addresses that have a score entry are returned; unknown addresses
+        are silently omitted.
+        An empty request body returns an empty array without querying the database.
+      operationId: postScoreEvms
+      requestBody:
+        required: true
+        description: JSON array of EVM addresses to query. Must be non-empty to trigger a DB lookup.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/EvmAddress'
+            example:
+              - "0x0000000000000000000000001000000100000001"
+      responses:
+        '200':
+          description: Array of risk-score rows ordered by `evm_address`. May be empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EvmRiskScoreRow'
+        '400':
+          description: |
+            One or more addresses failed validation. The response identifies the first
+            offending address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "invalid evm address: \"0x1234\""
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/reputation/score/mvts:
+    post:
+      summary: Fetch aggregated risk summary for a list of Movement addresses
+      description: |
+        Returns one summary row per Movement address: the EVM source with the highest
+        risk score, plus a combined `transfer_fund` figure.
+        Movement addresses with no `address_evm_sources` rows are silently omitted.
+        An empty request body returns an empty array without querying the database.
+      operationId: postScoreMvts
+      requestBody:
+        required: true
+        description: JSON array of Movement addresses to query. Must be non-empty to trigger a DB lookup.
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/MovementAddress'
+            example:
+              - "0x00000000000000000000000000000000000000000000000000000000000000a1"
+      responses:
+        '200':
+          description: Array of aggregated risk-summary rows ordered by `movement_address`. May be empty.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MvtScoreRow'
+        '400':
+          description: |
+            One or more addresses failed validation. The response identifies the first
+            offending address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "invalid movement address: \"0x1234\""
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
