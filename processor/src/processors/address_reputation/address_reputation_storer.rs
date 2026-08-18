@@ -19,10 +19,27 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use diesel::{
     sql_query,
-    sql_types::{BigInt, Numeric, Text, Varchar},
+    sql_types::{BigInt, Integer, Numeric, Text, Varchar},
 };
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
-use tracing::debug;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, info};
+
+#[derive(diesel::QueryableByName)]
+struct AesRow {
+    #[diesel(sql_type = Varchar)]
+    movement_address: String,
+    #[diesel(sql_type = Varchar)]
+    asset_type: String,
+    #[diesel(sql_type = Varchar)]
+    evm_address: String,
+    #[diesel(sql_type = Numeric)]
+    evm_fund: BigDecimal,
+    #[diesel(sql_type = Numeric)]
+    transfer_fund: BigDecimal,
+    #[diesel(sql_type = Integer)]
+    hops_min: i32,
+}
 
 pub struct AddressReputationStorer
 where
@@ -30,11 +47,22 @@ where
 {
     conn_pool: ArcDbPool,
     config: AddressReputationConfig,
+    /// Receives LZ GUIDs after bridge_inflows is committed so the enricher never
+    /// races against a row that doesn't exist yet.
+    guid_sender: UnboundedSender<String>,
 }
 
 impl AddressReputationStorer {
-    pub fn new(conn_pool: ArcDbPool, config: AddressReputationConfig) -> Self {
-        Self { conn_pool, config }
+    pub fn new(
+        conn_pool: ArcDbPool,
+        config: AddressReputationConfig,
+        guid_sender: UnboundedSender<String>,
+    ) -> Self {
+        Self {
+            conn_pool,
+            config,
+            guid_sender,
+        }
     }
 }
 
@@ -68,6 +96,11 @@ impl Processable for AddressReputationStorer {
         let end_v = input.metadata.end_version;
         let edges_len = edges.len();
         let inflows_len = inflows.len();
+        // Collect GUIDs before moving inflows into the transaction closure.
+        // They are sent to the enricher AFTER the transaction commits so the
+        // bridge_inflows row is guaranteed to exist when write_evm runs.
+        let pending_guids: Vec<String> =
+            inflows.iter().filter_map(|bi| bi.lz_guid.clone()).collect();
 
         // Wrap edge/inflow inserts and the address_evm_sources rollup in one
         // Postgres transaction so the batch is atomic and read-your-writes
@@ -162,6 +195,13 @@ impl Processable for AddressReputationStorer {
             query: None,
         })?;
 
+        // Forward LZ GUIDs to the enricher now that the bridge_inflows rows exist.
+        for guid in pending_guids {
+            if let Err(e) = self.guid_sender.send(guid) {
+                tracing::error!(err = ?e, "address_reputation: failed to forward lz_guid to enricher");
+            }
+        }
+
         debug!(
             "address_reputation: stored {} edges, {} inflows for versions [{}, {}]",
             edges_len, inflows_len, start_v, end_v,
@@ -208,19 +248,31 @@ pub async fn upsert_bridge_seed(
             evm_fund       = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = 0";
-    sql_query(sql_str)
+            hops_min       = 0 \
+        RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
+    let rows = sql_query(sql_str)
         .bind::<Varchar, _>(recipient)
         .bind::<Varchar, _>(asset)
         .bind::<Varchar, _>(evm)
         .bind::<Numeric, _>(amount)
         .bind::<BigInt, _>(ord)
-        .execute(conn)
+        .get_results::<AesRow>(conn)
         .await
         .map_err(|e| ProcessorError::DBStoreError {
             message: format!("Failed to upsert bridge evm seed: {e:?}"),
             query: None,
         })?;
+    for row in &rows {
+        info!(
+            movement_address = %row.movement_address,
+            evm_address = %row.evm_address,
+            asset_type = %row.asset_type,
+            evm_fund = %row.evm_fund,
+            transfer_fund = %row.transfer_fund,
+            hops_min = row.hops_min,
+            "aes: bridge seed upsert",
+        );
+    }
     Ok(())
 }
 
@@ -248,7 +300,7 @@ async fn propagate_evm_sources(
              first_seen_ord, last_seen_ord, hops_min) \
         SELECT $3, $2, s.evm_address, \
                0, \
-               ($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), \
+               ROUND(($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), 9), \
                $5, $5, s.hops_min + 1 \
           FROM src s CROSS JOIN total \
          WHERE total.t IS NOT NULL AND total.t > 0 \
@@ -256,18 +308,31 @@ async fn propagate_evm_sources(
             transfer_fund  = address_evm_sources.transfer_fund + EXCLUDED.transfer_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min)";
-    sql_query(sql_str)
+            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min) \
+        RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
+    let rows = sql_query(sql_str)
         .bind::<Text, _>(from_addr)
         .bind::<Varchar, _>(asset)
         .bind::<Varchar, _>(to_addr)
         .bind::<Numeric, _>(amount)
         .bind::<BigInt, _>(ord)
-        .execute(conn)
+        .get_results::<AesRow>(conn)
         .await
         .map_err(|e| ProcessorError::DBStoreError {
             message: format!("Failed to propagate evm sources {from_addr} -> {to_addr}: {e:?}"),
             query: None,
         })?;
+    for row in &rows {
+        info!(
+            movement_address = %row.movement_address,
+            evm_address = %row.evm_address,
+            asset_type = %row.asset_type,
+            evm_fund = %row.evm_fund,
+            transfer_fund = %row.transfer_fund,
+            hops_min = row.hops_min,
+            from_addr,
+            "aes: propagate upsert",
+        );
+    }
     Ok(())
 }

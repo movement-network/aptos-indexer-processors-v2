@@ -47,6 +47,7 @@ hyper = { workspace = true }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
+moka = { version = "0.12", features = ["future"] }
 
 # Postgres SSL support
 native-tls = { workspace = true }
@@ -85,3 +86,5 @@ jemallocator = { version = "0.5.0", features = [
 aptos-indexer-processor-sdk = { workspace = true, features = [
     "testing_framework",
 ] }
+tracing-subscriber = { workspace = true }
+wiremock = "0.5"

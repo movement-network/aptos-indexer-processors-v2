@@ -39,19 +39,16 @@ pub type BridgeRegistry = Arc<Vec<BridgeRegistryEntry>>;
 
 pub struct AddressReputationExtractor {
     pub bridge_registry: BridgeRegistry,
-    /// Sends newly extracted LZ GUIDs to the background enricher loop.
-    /// None when the enricher is disabled in config.
-    pub guid_sender: Option<UnboundedSender<String>>,
+    /// Sends directly-known EVM addresses (Circle USDCx, LZ compose) to the enricher
+    /// loop for Hypernative screening without needing GUID resolution first.
+    pub evm_sender: UnboundedSender<String>,
 }
 
 impl AddressReputationExtractor {
-    pub fn new(
-        bridge_registry: BridgeRegistry,
-        guid_sender: Option<UnboundedSender<String>>,
-    ) -> Self {
+    pub fn new(bridge_registry: BridgeRegistry, evm_sender: UnboundedSender<String>) -> Self {
         Self {
             bridge_registry,
-            guid_sender,
+            evm_sender,
         }
     }
 }
@@ -138,31 +135,44 @@ impl Processable for AddressReputationExtractor {
                     .iter()
                     .find(|e| e.enabled && e.event_type == type_str)
                 {
-                    if let Some(mut inflow) = parse_bridge_event(
+                    match parse_bridge_event(
                         event.data.as_str(),
                         entry,
                         txn_version,
                         event_index,
                         block_timestamp,
                     ) {
-                        // Fall back to the transaction's payload when the event
-                        // itself doesn't carry EVM-side data.
-                        let kind = entry.payload_kind.as_deref();
-                        if inflow.evm_source.is_none() {
-                            inflow.evm_source = decode_payload_evm_source(txn, kind);
-                        }
-                        if inflow.lz_guid.is_none() {
-                            inflow.lz_guid = extract_payload_guid(txn, kind);
-                        }
-                        // Forward new GUIDs to the background enricher so it can
-                        // resolve the EVM depositor address via the LZ Scan API.
-                        if let (Some(guid), Some(sender)) =
-                            (inflow.lz_guid.as_ref(), self.guid_sender.as_ref())
-                        {
-                            let _ = sender.send(guid.clone());
-                        }
-                        txn_inflows.push(inflow);
-                        continue;
+                        None => {
+                            tracing::warn!(
+                                txn_version,
+                                event_index,
+                                bridge_name = %entry.bridge_name,
+                                event_type = %type_str,
+                                "extractor: parse_bridge_event returned None for registered bridge event"
+                            );
+                        },
+                        Some(mut inflow) => {
+                            // Fall back to the transaction's payload when the event
+                            // itself doesn't carry EVM-side data.
+                            let kind = entry.payload_kind.as_deref();
+                            if inflow.evm_source.is_none() {
+                                inflow.evm_source = decode_payload_evm_source(txn, kind);
+                            }
+                            if inflow.lz_guid.is_none() {
+                                inflow.lz_guid = extract_payload_guid(txn, kind);
+                            }
+                            // Forward Circle / LZ-compose EVM address to update its score in the evm fetch loop.
+                            // NOTE: LZ GUIDs are NOT sent here — they are forwarded from the storer after
+                            // the bridge_inflows row is committed, to avoid a race where the enricher
+                            // resolves the GUID before the row exists.
+                            if let Some(evm) = inflow.evm_source.as_ref() {
+                                if let Err(e) = self.evm_sender.send(evm.clone()) {
+                                    tracing::error!(err = ?e, "Send GUI channel to fetch evm address failed");
+                                }
+                            }
+                            txn_inflows.push(inflow);
+                            continue;
+                        },
                     }
                 }
 
@@ -349,9 +359,37 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         // is arg[0], a big-endian IntentPayload whose `local_depositor` is the
         // EVM address that called `depositForBurn` on the source chain.
         "circle_intent" => {
-            let arg = args.first()?;
-            let bytes = intent_payload::parse_hex_arg(arg)?;
-            intent_payload::decode_local_depositor(&bytes)
+            let arg = match args.first() {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(
+                        txn_version = txn.version,
+                        "circle_intent: no args in payload"
+                    );
+                    return None;
+                },
+            };
+            let bytes = match intent_payload::parse_hex_arg(arg) {
+                Some(b) => b,
+                None => {
+                    tracing::warn!(
+                        txn_version = txn.version,
+                        arg0 = %arg,
+                        "circle_intent: failed to parse arg[0] as hex"
+                    );
+                    return None;
+                },
+            };
+            let result = intent_payload::decode_local_depositor(&bytes);
+            if result.is_none() {
+                tracing::warn!(
+                    txn_version = txn.version,
+                    arg0_len = bytes.len(),
+                    arg0_prefix = %hex::encode(&bytes[..bytes.len().min(16)]),
+                    "circle_intent: decode_local_depositor returned None"
+                );
+            }
+            result
         },
         // LayerZero V2 OFT: when `sendParam.composeMsg` is non-empty on the
         // Ethereum side, OFTCore prepends `addressToBytes32(msg.sender)` to the
@@ -361,7 +399,22 @@ fn decode_payload_evm_source(txn: &Transaction, kind: Option<&str>) -> Option<St
         // (compose-less) transfers where the 40-byte message carries no sender.
         // The LZ executor delivers packets via a Move script (ScriptPayload),
         // handled by the ScriptPayload arm above.
-        "layerzero_oft" => lz_payload::scan_args_for_oft_sender(args),
+        "layerzero_oft" => {
+            let result = lz_payload::scan_args_for_oft_sender(args);
+            if result.is_none() {
+                let arg_byte_lens: Vec<usize> = args
+                    .iter()
+                    .map(|a| a.strip_prefix("0x").unwrap_or(a).len() / 2)
+                    .collect();
+                tracing::debug!(
+                    txn_version = txn.version,
+                    args_count = args.len(),
+                    arg_byte_lens = ?arg_byte_lens,
+                    "layerzero_oft: no compose sender (standard transfer, evm_source=NULL)"
+                );
+            }
+            result
+        },
         _ => None,
     }
 }
@@ -382,7 +435,20 @@ fn extract_payload_guid(txn: &Transaction, kind: Option<&str>) -> Option<String>
         PayloadType::ScriptPayload(sp) => &sp.arguments,
         _ => return None,
     };
-    lz_payload::extract_guid_from_args(args)
+    let result = lz_payload::extract_guid_from_args(args);
+    if result.is_none() {
+        let arg_byte_lens: Vec<usize> = args
+            .iter()
+            .map(|a| a.strip_prefix("0x").unwrap_or(a).len() / 2)
+            .collect();
+        tracing::warn!(
+            txn_version = txn.version,
+            args_count = args.len(),
+            arg_byte_lens = ?arg_byte_lens,
+            "layerzero_oft: no GUID found in payload args — inflow stored without lz_guid, enricher skipped"
+        );
+    }
+    result
 }
 
 fn parse_bridge_event(

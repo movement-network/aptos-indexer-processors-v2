@@ -1420,9 +1420,13 @@ diesel::table! {
         evm_address -> Varchar,
         risk_score -> Numeric,
         #[max_length = 32]
-        risk_label -> Nullable<Varchar>,
+        risk_label -> Varchar,
         #[max_length = 64]
-        source -> Nullable<Varchar>,
+        source -> Varchar,
+        #[max_length = 64]
+        recommendation -> Varchar,
+        #[max_length = 32]
+        severity -> Varchar,
         fetched_at -> Timestamp,
         inserted_at -> Timestamp,
     }

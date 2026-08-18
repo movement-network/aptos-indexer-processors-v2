@@ -11,7 +11,12 @@ use crate::{
             address_reputation_config::BridgeConfig,
             address_reputation_extractor::AddressReputationExtractor,
             address_reputation_model::BridgeRegistryEntry,
-            address_reputation_storer::AddressReputationStorer, lz_enricher::LzEnricher,
+            address_reputation_storer::AddressReputationStorer,
+            evm_screening::{
+                evm_storer::DbScoreSaver, hypernative::HypernativeClient, lz_storer::DbLzStore,
+                EnricherLoop,
+            },
+            lz_enricher::LzEnricher,
         },
         processor_status_saver::{
             get_end_version, get_starting_version, PostgresProcessorStatusSaver,
@@ -34,7 +39,7 @@ use aptos_indexer_processor_sdk::{
     utils::chain_id_check::check_or_update_chain_id,
 };
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 pub struct AddressReputationProcessor {
     pub config: IndexerProcessorConfig,
@@ -134,25 +139,47 @@ impl ProcessorTrait for AddressReputationProcessor {
             "address_reputation: loaded bridge registry from config"
         );
 
-        // Spawn the LZ GUID enricher in the background when enabled. The channel
-        // is unbounded so the extractor never blocks; rate-limiting happens on the
-        // enricher side.
-        let guid_sender = if processor_config.lz_enricher.enabled {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            let enricher = LzEnricher::new(
-                self.db_pool.clone(),
-                rx,
-                processor_config.lz_enricher.interval_ms,
-                processor_config.lz_enricher.max_retries,
-                processor_config.propagate_evm_sources,
-            );
-            tokio::spawn(enricher.run());
-            info!("address_reputation: LZ enricher started");
-            Some(tx)
-        } else {
-            info!("address_reputation: LZ enricher disabled");
-            None
-        };
+        // Spawn the background enricher loop when LZ enrichment is enabled.
+        // Channels are unbounded so the extractor never blocks.
+        let (guid_sender, guid_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (evm_sender, evm_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let lz_db = std::sync::Arc::new(DbLzStore::new(
+            self.db_pool.clone(),
+            processor_config.propagate_evm_sources,
+        ));
+        let lz = LzEnricher::new(
+            lz_db,
+            processor_config.lz_enricher.scan_api_base_url.clone(),
+        );
+
+        info!(
+            max_concurrent = processor_config.hypernative.max_concurrent_requests,
+            max_rps = processor_config.hypernative.max_rps,
+            ttl_secs = processor_config.hypernative.ttl_secs,
+            "address_reputation: Hypernative screener starting (connection verified before loop)"
+        );
+
+        let ttl = std::time::Duration::from_secs(processor_config.hypernative.ttl_secs);
+        let db = std::sync::Arc::new(DbScoreSaver::new(Some(self.db_pool.clone()), ttl));
+        let hypernative = HypernativeClient::new(
+            processor_config.hypernative.client_id.clone(),
+            processor_config.hypernative.client_secret.clone(),
+            processor_config.hypernative.screener_policy_id.clone(),
+            processor_config.hypernative.screener_url.clone(),
+            processor_config.hypernative.max_concurrent_requests,
+            processor_config.hypernative.max_rps,
+            processor_config.hypernative.ttl_secs,
+        );
+        let loop_ = EnricherLoop::new(
+            db,
+            guid_rx,
+            evm_rx,
+            lz,
+            hypernative,
+            processor_config.lz_enricher.interval_ms,
+        );
+        let mut enricher_handle = tokio::spawn(loop_.run());
+        info!("address_reputation: enricher loop started");
 
         let transaction_stream = TransactionStreamStep::new(TransactionStreamConfig {
             starting_version,
@@ -160,8 +187,9 @@ impl ProcessorTrait for AddressReputationProcessor {
             ..self.config.transaction_stream_config.clone()
         })
         .await?;
-        let extractor = AddressReputationExtractor::new(registry, guid_sender);
-        let storer = AddressReputationStorer::new(self.db_pool.clone(), processor_config);
+        let extractor = AddressReputationExtractor::new(registry, evm_sender);
+        let storer =
+            AddressReputationStorer::new(self.db_pool.clone(), processor_config, guid_sender);
         let version_tracker = VersionTrackerStep::new(
             PostgresProcessorStatusSaver::new(self.config.clone(), self.db_pool.clone()),
             DEFAULT_UPDATE_PROCESSOR_STATUS_SECS,
@@ -176,17 +204,28 @@ impl ProcessorTrait for AddressReputationProcessor {
         .end_and_return_output_receiver(channel_size);
 
         loop {
-            match buffer_receiver.recv().await {
-                Ok(txn_context) => {
-                    debug!(
-                        "address_reputation: finished versions [{:?}, {:?}]",
-                        txn_context.metadata.start_version, txn_context.metadata.end_version,
-                    );
-                },
-                Err(e) => {
-                    info!("No more transactions in channel: {:?}", e);
-                    break Ok(());
-                },
+            tokio::select! {
+                result = buffer_receiver.recv() => {
+                    match result {
+                        Ok(txn_context) => {
+                            debug!(
+                                "address_reputation: finished versions [{:?}, {:?}]",
+                                txn_context.metadata.start_version, txn_context.metadata.end_version,
+                            );
+                        },
+                        Err(e) => {
+                            info!("No more transactions in channel: {:?}", e);
+                            break Ok(());
+                        },
+                    }
+                }
+                result = &mut enricher_handle => {
+                    match result {
+                        Ok(()) => error!("address_reputation: enricher loop exited unexpectedly"),
+                        Err(ref e) => error!(err = ?e, "address_reputation: enricher loop panicked"),
+                    }
+                    break Err(anyhow::anyhow!("enricher loop terminated unexpectedly"));
+                }
             }
         }
     }
