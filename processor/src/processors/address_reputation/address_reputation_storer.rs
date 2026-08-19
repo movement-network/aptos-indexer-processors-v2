@@ -248,7 +248,8 @@ pub async fn upsert_bridge_seed(
             evm_fund       = address_evm_sources.evm_fund + EXCLUDED.evm_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = 0 \
+            hops_min       = 0, \
+            updated_at     = NOW() \
         RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
     let rows = sql_query(sql_str)
         .bind::<Varchar, _>(recipient)
@@ -308,7 +309,8 @@ async fn propagate_evm_sources(
             transfer_fund  = address_evm_sources.transfer_fund + EXCLUDED.transfer_fund, \
             first_seen_ord = LEAST(address_evm_sources.first_seen_ord, EXCLUDED.first_seen_ord), \
             last_seen_ord  = GREATEST(address_evm_sources.last_seen_ord, EXCLUDED.last_seen_ord), \
-            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min) \
+            hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min), \
+            updated_at     = NOW() \
         RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
     let rows = sql_query(sql_str)
         .bind::<Text, _>(from_addr)

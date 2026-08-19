@@ -1371,6 +1371,7 @@ diesel::table! {
         last_seen_ord -> Int8,
         hops_min -> Int4,
         inserted_at -> Timestamp,
+        updated_at -> Timestamp,
     }
 }
 
