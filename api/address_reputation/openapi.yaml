@@ -228,7 +228,7 @@ paths:
         - name: since
           in: query
           required: true
-          description: Unix timestamp in seconds. Rows with `inserted_at >= since` are returned.
+          description: Unix timestamp in seconds. Rows with `updated_at >= since` are returned.
           schema:
             type: integer
             format: int64
