@@ -91,12 +91,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/address-reputation-api
+          images: ghcr.io/${{ github.repository_owner }}/aptos-indexer-processors-v2
           tags: |
-            type=sha
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=api-
+            type=ref,event=branch,prefix=api-
+            type=ref,event=tag,prefix=api-
+            type=raw,value=api-latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
