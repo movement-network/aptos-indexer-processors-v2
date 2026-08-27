@@ -47,7 +47,7 @@ hyper = { workspace = true }
 itertools = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future"], default-features = false }
 
 # Postgres SSL support
 native-tls = { workspace = true }
