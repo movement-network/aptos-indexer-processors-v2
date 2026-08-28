@@ -25,11 +25,11 @@ fi
 set -e
 set -x
 
-cargo xclippy
+cargo +nightly-2026-08-10 xclippy
 
 # We require the nightly build of cargo fmt
 # to provide stricter rust formatting.
-cargo +nightly fmt $CHECK_ARG
+cargo +nightly-2026-08-10 fmt $CHECK_ARG
 
 # Once cargo-sort correctly handles workspace dependencies,
 # we can move to cleaner workspace dependency notation.
