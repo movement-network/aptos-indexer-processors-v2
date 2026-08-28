@@ -28,9 +28,9 @@ jobs:
           sudo apt update && sudo apt install libdw-dev
           cargo install cargo-sort
           rustup update
-          rustup toolchain install nightly
-          rustup component add clippy --toolchain nightly
-          rustup component add rustfmt --toolchain nightly
+          rustup toolchain install nightly-2026-08-10
+          rustup component add clippy --toolchain nightly-2026-08-10
+          rustup component add rustfmt --toolchain nightly-2026-08-10
           scripts/rust_lint.sh --check
       - name: Ensure the --no-default-features build passes too
         run: cargo build --all-targets --no-default-features

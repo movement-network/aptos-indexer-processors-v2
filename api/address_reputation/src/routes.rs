@@ -66,6 +66,7 @@ pub fn build_router(state: AppState) -> Router {
 
     // Health check is public — no API key required.
     Router::new()
+        .route("/health", get(handle_health))
         .route("/v1/reputation/health", get(handle_health))
         .merge(protected)
         .with_state(state)
