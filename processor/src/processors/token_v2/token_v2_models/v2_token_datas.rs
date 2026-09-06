@@ -90,25 +90,31 @@ impl TokenDataV2 {
             let is_fungible_v2;
             // Get token properties from 0x4::property_map::PropertyMap
             let mut token_properties = serde_json::Value::Null;
-            if let Some(object_metadata) = object_metadatas.get(&token_data_id) {
-                let fungible_asset_metadata = object_metadata.fungible_asset_metadata.as_ref();
-                if fungible_asset_metadata.is_some() {
-                    is_fungible_v2 = Some(true);
-                } else {
-                    is_fungible_v2 = Some(false);
-                }
-                token_properties = object_metadata
-                    .property_map
-                    .as_ref()
-                    .map(|m| m.inner.clone())
-                    .unwrap_or(token_properties);
-                // In aggregator V2 name is now derived from a separate struct
-                if let Some(token_identifier) = object_metadata.token_identifier.as_ref() {
-                    token_name = token_identifier.get_name_trunc();
-                }
+            // TokenV2 was identified. Missing ObjectCore is not "this write
+            // resource is not a token" — that is `TokenV2::from_write_resource`
+            // returning `Ok(None)`. The old path mapped the hole to `Ok(None)`
+            // so `parse_v2_token` skipped token_datas_v2 / current_token_datas_v2
+            // while TokenV2Extractor still succeeded and VersionTrackerStep
+            // advanced the checkpoint.
+            let object_metadata = require_object_core_for_token_data(
+                object_metadatas.get(&token_data_id),
+                txn_version,
+                &token_data_id,
+            )?;
+            let fungible_asset_metadata = object_metadata.fungible_asset_metadata.as_ref();
+            if fungible_asset_metadata.is_some() {
+                is_fungible_v2 = Some(true);
             } else {
-                // ObjectCore should not be missing, returning from entire function early
-                return Ok(None);
+                is_fungible_v2 = Some(false);
+            }
+            token_properties = object_metadata
+                .property_map
+                .as_ref()
+                .map(|m| m.inner.clone())
+                .unwrap_or(token_properties);
+            // In aggregator V2 name is now derived from a separate struct
+            if let Some(token_identifier) = object_metadata.token_identifier.as_ref() {
+                token_name = token_identifier.get_name_trunc();
             }
 
             let collection_id = inner.get_collection_address();
@@ -304,6 +310,28 @@ impl TokenDataV2 {
     }
 }
 
+/// After a TokenV2 write resource is identified, ObjectCore must be present
+/// in `object_metadatas` (same ObjectGroup).
+///
+/// * `Ok(metadata)` — persist token_datas_v2 / current_token_datas_v2
+/// * `Err(_)` — propagate so `parse_v2_token` fails (`.unwrap()` on main;
+///   `?` once #36/#37 land) and TokenV2Extractor does not succeed. The
+///   checkpoint does not advance.
+///
+/// The old write path mapped a missing ObjectCore onto `Ok(None)`, which is
+/// the same success signal as "this write resource is not TokenV2".
+pub(crate) fn require_object_core_for_token_data<T>(
+    object_metadata: Option<T>,
+    txn_version: i64,
+    token_data_id: &str,
+) -> anyhow::Result<T> {
+    object_metadata.ok_or_else(|| {
+        anyhow::anyhow!(
+            "ObjectCore missing for TokenV2 token_data_id {token_data_id}, txn version {txn_version}"
+        )
+    })
+}
+
 /// This is a parquet version of TokenDataV2
 
 #[derive(Allocative, Clone, Debug, Default, Deserialize, ParquetRecordWriter, Serialize)]
@@ -465,5 +493,145 @@ impl From<CurrentTokenDataV2> for PostgresCurrentTokenDataV2 {
             decimals: raw_item.decimals,
             is_deleted_v2: raw_item.is_deleted_v2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{require_object_core_for_token_data, TokenDataV2};
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use ahash::AHashMap;
+    use aptos_indexer_processor_sdk::{
+        aptos_protos::transaction::v1::{MoveStructTag, WriteResource},
+        utils::convert::standardize_address,
+    };
+
+    fn token_v2_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x4".to_string(),
+                module: "token".to_string(),
+                name: "Token".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x4::token::Token".to_string(),
+            data: r#"{"collection":{"inner":"0xcol"},"description":"d","name":"n","uri":"u"}"#
+                .to_string(),
+        }
+    }
+
+    fn non_token_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectCore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectCore".to_string(),
+            data: r#"{"allow_ungated_transfer":true,"guid_creation_num":"0","owner":"0xabc"}"#
+                .to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_object_core_is_not_ok_none_skip() {
+        let result = require_object_core_for_token_data(None::<()>, 42, "0xtoken");
+        assert!(
+            result.is_err(),
+            "missing ObjectCore after TokenV2 is identified must fail the write, not skip"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for TokenV2"),
+            "error should name the TokenV2 ObjectCore lookup, got: {message}"
+        );
+        assert!(
+            message.contains("0xtoken"),
+            "error should include token_data_id, got: {message}"
+        );
+    }
+
+    /// `get_v2_from_write_resource` used to map a missing ObjectCore to
+    /// `Ok(None)`. That is the same success signal as "this write resource
+    /// is not TokenV2", so `parse_v2_token` still returned the batch and
+    /// `TokenV2Extractor` let `VersionTrackerStep` advance the checkpoint
+    /// while `token_datas_v2` / `current_token_datas_v2` never received
+    /// the confirmed TokenV2 write.
+    ///
+    /// The write path now uses `require_object_core_for_token_data`: only
+    /// `TokenV2::from_write_resource` returning `Ok(None)` skips; a hole
+    /// after TokenV2 is identified is `Err`.
+    #[test]
+    fn write_path_does_not_map_missing_object_core_to_ok_none() {
+        let write_resource = token_v2_write_resource(
+            "0x00000000000000000000000000000000000000000000000000000000000000aa",
+        );
+        let empty_object_metadatas = AHashMap::new();
+        let write_result = TokenDataV2::get_v2_from_write_resource(
+            &write_resource,
+            99,
+            0,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        );
+        assert!(
+            write_result.is_err(),
+            "missing ObjectCore must fail the write, not skip the token data row: {write_result:?}"
+        );
+        let message = write_result.unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for TokenV2"),
+            "write-path error should name the ObjectCore hole, got: {message}"
+        );
+    }
+
+    #[test]
+    fn non_token_write_is_intentional_ok_none() {
+        let write_resource = non_token_write_resource("0x1");
+        let empty_object_metadatas = AHashMap::new();
+        let result = TokenDataV2::get_v2_from_write_resource(
+            &write_resource,
+            1,
+            0,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        )
+        .unwrap();
+        assert!(
+            result.is_none(),
+            "a non-Token write resource is intentional absence"
+        );
+    }
+
+    #[test]
+    fn resolved_object_core_is_kept() {
+        let metadata =
+            require_object_core_for_token_data(Some("object-core"), 1, "0xtoken").unwrap();
+        assert_eq!(metadata, "object-core");
+
+        let address = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+        let write_resource = token_v2_write_resource(address);
+        let mut object_metadatas = AHashMap::new();
+        object_metadatas.insert(
+            standardize_address(address),
+            ObjectAggregatedData::default(),
+        );
+        let (token_data, current) = TokenDataV2::get_v2_from_write_resource(
+            &write_resource,
+            7,
+            1,
+            chrono::NaiveDateTime::default(),
+            &object_metadatas,
+        )
+        .unwrap()
+        .expect("TokenV2 plus ObjectCore must persist token data");
+        assert_eq!(token_data.token_name, "n");
+        assert_eq!(current.last_transaction_version, 7);
+        assert_eq!(current.is_deleted_v2, Some(false));
     }
 }
