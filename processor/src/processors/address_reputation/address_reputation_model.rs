@@ -47,9 +47,12 @@ pub struct BridgeInflow {
 ///   never touched by transfers.
 /// - `transfer_fund`: cumulative weighted attribution received through Movement
 ///   transfers. For a transfer A→B of amount C, each EVM source E of A
-///   contributes `C / total_A_evm_fund * E_A.evm_fund * (1 / (E_A.hops_min + 1))`
-///   to B's `transfer_fund` for E. Updated only on transfers; never touched by
-///   bridge inflows.
+///   contributes
+///   `C / total_A_w * w_A[E] * (1 / (E_A.hops_min + 1))`
+///   to B's `transfer_fund` for E, where `w = evm_fund + transfer_fund`.
+///   Hop-1+ rows have `evm_fund = 0`, so omitting `transfer_fund` from `w`
+///   would drop every hop-2+ transfer. Updated only on transfers; never
+///   touched by bridge inflows.
 #[derive(Clone, Debug, Deserialize, FieldCount, Insertable, Queryable, Serialize)]
 #[diesel(table_name = address_evm_sources)]
 pub struct AddressEvmSource {
