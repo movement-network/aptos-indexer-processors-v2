@@ -35,7 +35,9 @@ pub type TableHandle = String;
 pub type Address = String;
 pub type ShareToStakingPoolMapping = AHashMap<TableHandle, DelegatorPoolBalanceMetadata>;
 pub type ShareToPoolMapping = AHashMap<TableHandle, PoolBalanceMetadata>;
-pub type CurrentDelegatorBalancePK = (Address, Address, String);
+/// Matches the `current_delegator_balances` DB PK. `table_handle` is required
+/// because a delegator can hold inactive shares in multiple OLC pools.
+pub type CurrentDelegatorBalancePK = (Address, Address, String, TableHandle);
 pub type CurrentDelegatorBalanceMap = AHashMap<CurrentDelegatorBalancePK, CurrentDelegatorBalance>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -64,7 +66,7 @@ pub struct DelegatorBalance {
 }
 
 #[derive(Debug, Identifiable, Queryable)]
-#[diesel(primary_key(delegator_address, pool_address, pool_type))]
+#[diesel(primary_key(delegator_address, pool_address, pool_type, table_handle))]
 #[diesel(table_name = current_delegator_balances)]
 pub struct CurrentDelegatorBalanceQuery {
     pub delegator_address: String,
@@ -78,6 +80,15 @@ pub struct CurrentDelegatorBalanceQuery {
 }
 
 impl CurrentDelegatorBalance {
+    pub fn pk(&self) -> CurrentDelegatorBalancePK {
+        (
+            self.delegator_address.clone(),
+            self.pool_address.clone(),
+            self.pool_type.clone(),
+            self.table_handle.clone(),
+        )
+    }
+
     /// Getting active share balances. Only 1 active pool per staking pool tracked in a single table
     pub async fn get_active_share_from_write_table_item(
         write_table_item: &WriteTableItem,
@@ -537,14 +548,8 @@ impl CurrentDelegatorBalance {
             };
             if let Some((delegator_balance, current_delegator_balance)) = maybe_delegator_balance {
                 delegator_balances.push(delegator_balance);
-                current_delegator_balances.insert(
-                    (
-                        current_delegator_balance.delegator_address.clone(),
-                        current_delegator_balance.pool_address.clone(),
-                        current_delegator_balance.pool_type.clone(),
-                    ),
-                    current_delegator_balance,
-                );
+                current_delegator_balances
+                    .insert(current_delegator_balance.pk(), current_delegator_balance);
             }
         }
         Ok((delegator_balances, current_delegator_balances))
@@ -648,7 +653,7 @@ impl From<DelegatorBalance> for ParquetDelegatorBalance {
 
 // Postgres models
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize)]
-#[diesel(primary_key(delegator_address, pool_address, pool_type))]
+#[diesel(primary_key(delegator_address, pool_address, pool_type, table_handle))]
 #[diesel(table_name = current_delegator_balances)]
 pub struct PostgresCurrentDelegatorBalance {
     pub delegator_address: String,
@@ -700,5 +705,63 @@ impl From<DelegatorBalance> for PostgresDelegatorBalance {
             shares: base.shares,
             parent_table_handle: base.parent_table_handle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bigdecimal::FromPrimitive;
+
+    fn inactive_balance(table_handle: &str, shares: u64) -> CurrentDelegatorBalance {
+        CurrentDelegatorBalance {
+            delegator_address: "0xdel".to_string(),
+            pool_address: "0xpool".to_string(),
+            pool_type: "inactive_shares".to_string(),
+            table_handle: table_handle.to_string(),
+            last_transaction_version: 1,
+            shares: BigDecimal::from_u64(shares).unwrap(),
+            parent_table_handle: "0xparent".to_string(),
+            block_timestamp: chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc(),
+        }
+    }
+
+    #[test]
+    fn current_delegator_balance_map_keeps_distinct_inactive_table_handles() {
+        let first = inactive_balance("0xaaaa", 10);
+        let second = inactive_balance("0xbbbb", 20);
+
+        let mut current_delegator_balances: CurrentDelegatorBalanceMap = AHashMap::new();
+        current_delegator_balances.insert(first.pk(), first.clone());
+        current_delegator_balances.insert(second.pk(), second.clone());
+
+        assert_eq!(current_delegator_balances.len(), 2);
+        assert_eq!(
+            current_delegator_balances.get(&first.pk()).unwrap().shares,
+            first.shares
+        );
+        assert_eq!(
+            current_delegator_balances.get(&second.pk()).unwrap().shares,
+            second.shares
+        );
+    }
+
+    #[test]
+    fn current_delegator_balance_map_last_write_wins_for_same_table_handle() {
+        let first = inactive_balance("0xaaaa", 10);
+        let updated = inactive_balance("0xaaaa", 99);
+
+        let mut current_delegator_balances: CurrentDelegatorBalanceMap = AHashMap::new();
+        current_delegator_balances.insert(first.pk(), first);
+        current_delegator_balances.insert(updated.pk(), updated.clone());
+
+        assert_eq!(current_delegator_balances.len(), 1);
+        assert_eq!(
+            current_delegator_balances
+                .get(&updated.pk())
+                .unwrap()
+                .shares,
+            updated.shares
+        );
     }
 }

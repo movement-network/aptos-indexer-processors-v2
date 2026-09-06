@@ -194,11 +194,18 @@ pub async fn parse_stake_data(
     all_current_stake_pool_voters
         .sort_by(|a, b| a.staking_pool_address.cmp(&b.staking_pool_address));
     all_current_delegator_balances.sort_by(|a, b| {
-        (&a.delegator_address, &a.pool_address, &a.pool_type).cmp(&(
-            &b.delegator_address,
-            &b.pool_address,
-            &b.pool_type,
-        ))
+        (
+            &a.delegator_address,
+            &a.pool_address,
+            &a.pool_type,
+            &a.table_handle,
+        )
+            .cmp(&(
+                &b.delegator_address,
+                &b.pool_address,
+                &b.pool_type,
+                &b.table_handle,
+            ))
     });
 
     all_delegator_pools.sort_by(|a, b| a.staking_pool_address.cmp(&b.staking_pool_address));

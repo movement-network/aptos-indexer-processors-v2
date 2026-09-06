@@ -54,7 +54,7 @@ pub struct DelegatedStakingActivity {
 }
 
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize, Queryable)]
-#[diesel(primary_key(delegator_address, pool_address, pool_type))]
+#[diesel(primary_key(delegator_address, pool_address, pool_type, table_handle))]
 #[diesel(table_name = current_delegator_balances)]
 pub struct CurrentDelegatorBalance {
     pub delegator_address: String,
