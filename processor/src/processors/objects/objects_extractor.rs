@@ -61,7 +61,11 @@ impl Processable for ObjectsExtractor {
         };
 
         let (raw_objects, raw_all_current_objects) =
-            process_objects(transactions.data, &mut Some(db_connection)).await;
+            process_objects(transactions.data, &mut Some(db_connection))
+                .await
+                .map_err(|e| ProcessorError::ProcessError {
+                    message: format!("Error processing objects: {e:?}"),
+                })?;
 
         let postgres_objects: Vec<PostgresObject> =
             raw_objects.into_iter().map(PostgresObject::from).collect();
