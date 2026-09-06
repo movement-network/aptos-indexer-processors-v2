@@ -169,7 +169,7 @@ impl CurrentDelegatedVoter {
                         query_retries,
                         query_retry_delay_ms,
                     )
-                    .await
+                    .await?
                 },
             };
             if !already_exists {
@@ -213,14 +213,20 @@ impl CurrentDelegatedVoter {
         ))
     }
 
+    /// Returns whether `(delegator_address, delegation_pool_address)` already
+    /// has a `current_delegated_voter` row.
+    ///
+    /// Only Diesel `NotFound` is treated as absence. Other query errors
+    /// propagate so a default self-vote is not inserted over a real voter.
     pub async fn get_existence_by_pk(
         conn: &mut DbPoolConnection<'_>,
         delegator_address: &str,
         delegation_pool_address: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         let mut tried = 0;
+        let mut last_err = None;
         while tried < query_retries {
             tried += 1;
             match CurrentDelegatedVoterQuery::get_by_pk(
@@ -230,8 +236,9 @@ impl CurrentDelegatedVoter {
             )
             .await
             {
-                Ok(_) => return true,
-                Err(_) => {
+                Ok(_) => return Ok(true),
+                Err(e) => {
+                    last_err = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -239,7 +246,27 @@ impl CurrentDelegatedVoter {
                 },
             }
         }
-        false
+        match last_err {
+            Some(e) => existence_from_exhausted_lookup(e),
+            None => Err(anyhow::anyhow!(
+                "Failed to check current_delegated_voter existence: no lookup attempts (query_retries = 0)"
+            )),
+        }
+    }
+}
+
+/// Classify a Diesel PK lookup after retries are exhausted.
+///
+/// `NotFound` is the only signal that the voter row is absent. Any other
+/// error (connection, timeout, deserialization) must propagate: treating it
+/// as absence would insert a default self-vote that upserts over a real voter
+/// at a newer `last_transaction_version`.
+pub(crate) fn existence_from_exhausted_lookup(err: diesel::result::Error) -> anyhow::Result<bool> {
+    match err {
+        diesel::result::Error::NotFound => Ok(false),
+        other => Err(anyhow::anyhow!(
+            "Failed to check current_delegated_voter existence: {other}"
+        )),
     }
 }
 
@@ -279,5 +306,36 @@ impl Ord for CurrentDelegatedVoter {
 impl PartialOrd for CurrentDelegatedVoter {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::existence_from_exhausted_lookup;
+    use diesel::result::Error;
+
+    #[test]
+    fn not_found_is_absence() {
+        assert!(!existence_from_exhausted_lookup(Error::NotFound).unwrap());
+    }
+
+    #[test]
+    fn connection_error_is_not_absence() {
+        let err = Error::DeserializationError("connection reset".into());
+        let result = existence_from_exhausted_lookup(err);
+        assert!(
+            result.is_err(),
+            "lookup failure must not look like NotFound"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("existence"),
+            "error should name the existence check"
+        );
+    }
+
+    #[test]
+    fn query_builder_error_is_not_absence() {
+        let err = Error::QueryBuilderError("broken connection".into());
+        assert!(existence_from_exhausted_lookup(err).is_err());
     }
 }
