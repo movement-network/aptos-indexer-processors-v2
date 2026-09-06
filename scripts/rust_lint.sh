@@ -25,7 +25,9 @@ fi
 set -e
 set -x
 
-cargo +nightly xclippy
+# Clippy uses rust-toolchain.toml (1.85). Nightly clippy cannot compile
+# allocative 0.3.x after Infallible was aliased to ! (E0119).
+cargo xclippy
 
 # We require the nightly build of cargo fmt
 # to provide stricter rust formatting.
