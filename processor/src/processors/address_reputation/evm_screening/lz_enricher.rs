@@ -56,11 +56,11 @@ impl LzEnricher {
     pub async fn process_guid(&self, guid: &str) -> anyhow::Result<Option<String>> {
         match self.fetch_evm(guid).await {
             Ok(Some(evm)) => {
-                self.db.write_evm(guid, &evm).await;
+                self.db.write_evm(guid, &evm).await?;
                 Ok(Some(evm))
             },
             Ok(None) => {
-                self.db.write_evm(guid, EVM_NULL_SENTINEL).await;
+                self.db.write_evm(guid, EVM_NULL_SENTINEL).await?;
                 Ok(None)
             },
             Err(e) => {
@@ -115,5 +115,51 @@ impl LzEnricher {
             Some(addr) => Ok(Some(addr)),
             None => anyhow::bail!("sender field absent in LZ response (packet may be undelivered)"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    struct WriteFailDb;
+
+    #[async_trait]
+    impl LzDb for WriteFailDb {
+        async fn load_pending_guids(&self) -> VecDeque<String> {
+            VecDeque::new()
+        }
+
+        async fn write_evm(&self, _guid: &str, _evm: &str) -> anyhow::Result<()> {
+            anyhow::bail!("injected write_evm failure");
+        }
+    }
+
+    #[tokio::test]
+    async fn process_guid_surfaces_write_evm_failure_as_retryable_err() {
+        let server = MockServer::start().await;
+        let guid = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        Mock::given(method("GET"))
+            .and(path(format!("/{guid}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{ "source": { "tx": { "from": "0x0000000000000000000000000000000000000001" } } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let enricher = LzEnricher::new(Arc::new(WriteFailDb), server.uri());
+        let err = enricher
+            .process_guid(guid)
+            .await
+            .expect_err("write_evm failure must be Err so the enricher retries the GUID");
+        assert!(
+            err.to_string().contains("injected write_evm failure"),
+            "unexpected error: {err}"
+        );
     }
 }
