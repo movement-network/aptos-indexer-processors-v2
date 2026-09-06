@@ -264,6 +264,21 @@ pub fn parse_fee_payer_signature(
             block_timestamp,
         ));
     }
+    // Fee payer is a required signer. Omitting it drops the payer from
+    // `signatures`, undercounts `num_signatures`, and hides the payer from
+    // `account_transactions` (which derives signers from this list).
+    if let Some(fee_payer_signer) = s.fee_payer_signer.as_ref() {
+        signatures.append(&mut from_account_signature(
+            fee_payer_signer,
+            sender,
+            transaction_version,
+            transaction_block_height,
+            false,
+            s.secondary_signer_addresses.len() as i64,
+            Some(&s.fee_payer_address),
+            block_timestamp,
+        ));
+    }
     signatures
 }
 
@@ -307,4 +322,95 @@ pub fn parse_single_sender(
         None,
         block_timestamp,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        account_signature::{Signature as AccountSignatureEnum, Type as AccountSignatureTypeEnum},
+        AccountSignature,
+    };
+    use chrono::DateTime;
+
+    fn ed25519_account_signature(seed: u8) -> AccountSignature {
+        AccountSignature {
+            r#type: AccountSignatureTypeEnum::Ed25519 as i32,
+            signature: Some(AccountSignatureEnum::Ed25519(Ed25519Signature {
+                public_key: vec![seed; 32],
+                signature: vec![seed.wrapping_add(1); 64],
+            })),
+        }
+    }
+
+    fn fee_payer_signature(fee_payer: &str) -> FeePayerSignature {
+        FeePayerSignature {
+            sender: Some(ed25519_account_signature(1)),
+            secondary_signer_addresses: vec![],
+            secondary_signers: vec![],
+            fee_payer_address: fee_payer.to_string(),
+            fee_payer_signer: Some(ed25519_account_signature(2)),
+        }
+    }
+
+    #[test]
+    fn parse_fee_payer_signature_includes_fee_payer_signer() {
+        let sender = "0x1".to_string();
+        let fee_payer = "0x2".to_string();
+        let parsed = parse_fee_payer_signature(
+            &fee_payer_signature(&fee_payer),
+            &sender,
+            42,
+            7,
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        let signers: Vec<String> = parsed.iter().map(|s| s.signer.clone()).collect();
+        assert!(
+            signers.iter().any(|s| s == &standardize_address(&sender)),
+            "sender missing from fee-payer signatures: {signers:?}"
+        );
+        assert!(
+            signers
+                .iter()
+                .any(|s| s == &standardize_address(&fee_payer)),
+            "fee payer missing from fee-payer signatures: {signers:?}"
+        );
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].is_sender_primary);
+        assert!(!parsed[1].is_sender_primary);
+        assert_eq!(parsed[1].multi_agent_index, 0);
+        assert_eq!(
+            parsed[1].public_key,
+            format!("0x{}", hex::encode(vec![2u8; 32]))
+        );
+    }
+
+    #[test]
+    fn parse_fee_payer_signature_uses_unique_index_after_secondary_signers() {
+        let sender = "0x1".to_string();
+        let secondary = "0x3".to_string();
+        let fee_payer = "0x2".to_string();
+        let s = FeePayerSignature {
+            sender: Some(ed25519_account_signature(1)),
+            secondary_signer_addresses: vec![secondary.clone()],
+            secondary_signers: vec![ed25519_account_signature(3)],
+            fee_payer_address: fee_payer.clone(),
+            fee_payer_signer: Some(ed25519_account_signature(2)),
+        };
+        let parsed = parse_fee_payer_signature(
+            &s,
+            &sender,
+            42,
+            7,
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1].signer, standardize_address(&secondary));
+        assert_eq!(parsed[1].multi_agent_index, 0);
+        assert_eq!(parsed[2].signer, standardize_address(&fee_payer));
+        assert_eq!(parsed[2].multi_agent_index, 1);
+        assert!(!parsed[2].is_sender_primary);
+    }
 }
