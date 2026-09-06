@@ -53,6 +53,7 @@ use crate::{
                 token_royalty::ParquetCurrentTokenRoyaltyV1,
             },
             token_v2_models::{
+                v2_collections::ParquetCollectionV2,
                 v2_token_activities::ParquetTokenActivityV2,
                 v2_token_datas::{ParquetCurrentTokenDataV2, ParquetTokenDataV2},
                 v2_token_metadata::ParquetCurrentTokenV2Metadata,
@@ -216,6 +217,9 @@ impl ProcessorConfig {
             ProcessorName::ParquetAccountTransactionsProcessor => {
                 HashSet::from([ParquetAccountTransaction::TABLE_NAME.to_string()])
             },
+            // Must include every table ParquetTokenV2Extractor writes.
+            // The version tracker checkpoints `collections_v2`, but resume only
+            // queries names in this set.
             ProcessorName::ParquetTokenV2Processor => HashSet::from([
                 ParquetCurrentTokenPendingClaim::TABLE_NAME.to_string(),
                 ParquetCurrentTokenRoyaltyV1::TABLE_NAME.to_string(),
@@ -225,6 +229,7 @@ impl ProcessorConfig {
                 ParquetCurrentTokenDataV2::TABLE_NAME.to_string(),
                 ParquetTokenOwnershipV2::TABLE_NAME.to_string(),
                 ParquetCurrentTokenOwnershipV2::TABLE_NAME.to_string(),
+                ParquetCollectionV2::TABLE_NAME.to_string(),
             ]),
             ProcessorName::ParquetObjectsProcessor => HashSet::from([
                 ParquetObject::TABLE_NAME.to_string(),
@@ -407,5 +412,65 @@ mod tests {
 
         let table_names = result.unwrap();
         assert_eq!(table_names, vec!["transactions".to_string(),]);
+    }
+
+    #[test]
+    fn test_parquet_token_v2_table_names_match_extractor_writes() {
+        // Resume queries every name in this set. The extractor writes
+        // collections_v2 and the version tracker checkpoints them via
+        // ParquetTypeEnum::CollectionsV2 ("collections_v2"). Omitting that
+        // name means resume never considers the collections_v2 watermark.
+        let resume_tables = ProcessorConfig::table_names(&ProcessorName::ParquetTokenV2Processor);
+        let extractor_writes = HashSet::from([
+            ParquetCurrentTokenPendingClaim::TABLE_NAME.to_string(),
+            ParquetCurrentTokenRoyaltyV1::TABLE_NAME.to_string(),
+            ParquetCurrentTokenV2Metadata::TABLE_NAME.to_string(),
+            ParquetTokenActivityV2::TABLE_NAME.to_string(),
+            ParquetTokenDataV2::TABLE_NAME.to_string(),
+            ParquetCurrentTokenDataV2::TABLE_NAME.to_string(),
+            ParquetTokenOwnershipV2::TABLE_NAME.to_string(),
+            ParquetCurrentTokenOwnershipV2::TABLE_NAME.to_string(),
+            ParquetCollectionV2::TABLE_NAME.to_string(),
+        ]);
+        assert_eq!(resume_tables, extractor_writes);
+        assert_eq!(
+            crate::parquet_processors::ParquetTypeEnum::CollectionsV2.to_string(),
+            ParquetCollectionV2::TABLE_NAME
+        );
+        assert!(VALID_TABLE_NAMES
+            .get("parquet_token_v2_processor")
+            .expect("VALID_TABLE_NAMES must list parquet_token_v2_processor")
+            .contains(ParquetCollectionV2::TABLE_NAME));
+    }
+
+    #[test]
+    fn test_parquet_token_v2_empty_backfill_status_keys() {
+        let config = ProcessorConfig::ParquetTokenV2Processor(ParquetDefaultProcessorConfig {
+            backfill_table: HashSet::new(),
+            channel_size: 10,
+            max_buffer_size: 100000,
+            upload_interval: 1800,
+        });
+
+        let table_names: HashSet<String> = config
+            .get_processor_status_table_names()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let expected: HashSet<String> = [
+            "current_token_pending_claims",
+            "current_token_royalties_v1",
+            "current_token_v2_metadata",
+            "token_activities_v2",
+            "token_datas_v2",
+            "current_token_datas_v2",
+            "token_ownerships_v2",
+            "current_token_ownerships_v2",
+            "collections_v2",
+        ]
+        .into_iter()
+        .map(|table| format!("parquet_token_v2_processor.{table}"))
+        .collect();
+        assert_eq!(table_names, expected);
     }
 }
