@@ -71,7 +71,10 @@ impl LzEnricher {
     }
 
     /// Load all unresolved LZ GUIDs from DB at startup.
-    pub async fn load_pending_guids(&self) -> VecDeque<String> {
+    ///
+    /// Returns `Err` when the store cannot be queried. The enricher retries;
+    /// a failed load must not be treated as "no pending GUIDs".
+    pub async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>> {
         self.db.load_pending_guids().await
     }
 
@@ -115,5 +118,103 @@ impl LzEnricher {
             Some(addr) => Ok(Some(addr)),
             None => anyhow::bail!("sender field absent in LZ response (packet may be undelivered)"),
         }
+    }
+}
+
+/// Retry `load_pending_guids` until the store answers. A failed query used to
+/// return an empty queue, which dropped every unresolved GUID until process
+/// restart. An empty `Ok` is still valid (nothing pending).
+pub(crate) async fn load_pending_guids_retrying(
+    lz: &LzEnricher,
+    retry_delay: Duration,
+) -> VecDeque<String> {
+    loop {
+        match lz.load_pending_guids().await {
+            Ok(q) => return q,
+            Err(e) => {
+                tracing::error!(
+                    err = %e,
+                    retry_secs = retry_delay.as_secs_f64(),
+                    "lz_enricher: failed to load pending GUIDs; retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+
+    struct FailDb;
+
+    #[async_trait]
+    impl LzDb for FailDb {
+        async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>> {
+            Err(anyhow::anyhow!("db down"))
+        }
+
+        async fn write_evm(&self, _guid: &str, _evm: &str) {}
+    }
+
+    struct FailThenOk {
+        remaining_failures: AtomicU32,
+        guids: Vec<String>,
+    }
+
+    #[async_trait]
+    impl LzDb for FailThenOk {
+        async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>> {
+            let left = self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
+            if left > 0 {
+                Err(anyhow::anyhow!("transient db error"))
+            } else {
+                Ok(self.guids.iter().cloned().collect())
+            }
+        }
+
+        async fn write_evm(&self, _guid: &str, _evm: &str) {}
+    }
+
+    #[tokio::test]
+    async fn load_pending_guids_error_is_not_empty_success() {
+        let lz = LzEnricher::new(Arc::new(FailDb), "http://x".to_string());
+        assert!(
+            lz.load_pending_guids().await.is_err(),
+            "a failed load must surface as Err, not an empty queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_pending_guids_retries_until_success() {
+        let pending = "0xe97fc9204872ba072f8d1a647d7045b881d20ff69aff1f050a0b05e8fb83228e";
+        let lz = LzEnricher::new(
+            Arc::new(FailThenOk {
+                remaining_failures: AtomicU32::new(2),
+                guids: vec![pending.to_string()],
+            }),
+            "http://x".to_string(),
+        );
+        let queue = load_pending_guids_retrying(&lz, Duration::from_millis(1)).await;
+        assert_eq!(queue, VecDeque::from([pending.to_string()]));
+    }
+
+    #[tokio::test]
+    async fn load_pending_guids_empty_ok_is_valid() {
+        let lz = LzEnricher::new(
+            Arc::new(FailThenOk {
+                remaining_failures: AtomicU32::new(0),
+                guids: vec![],
+            }),
+            "http://x".to_string(),
+        );
+        let queue = load_pending_guids_retrying(&lz, Duration::from_millis(1)).await;
+        assert!(queue.is_empty());
     }
 }
