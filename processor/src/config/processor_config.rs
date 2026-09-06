@@ -29,10 +29,8 @@ use crate::{
         events::events_model::ParquetEvent,
         fungible_asset::fungible_asset_models::{
             v2_fungible_asset_activities::ParquetFungibleAssetActivity,
-            v2_fungible_asset_balances::{
-                ParquetCurrentFungibleAssetBalance, ParquetCurrentUnifiedFungibleAssetBalance,
-                ParquetFungibleAssetBalance,
-            },
+            v2_fungible_asset_balances::ParquetFungibleAssetBalance,
+            v2_fungible_asset_to_coin_mappings::ParquetFungibleAssetToCoinMapping,
             v2_fungible_metadata::ParquetFungibleAssetMetadataModel,
         },
         objects::{
@@ -203,12 +201,15 @@ impl ProcessorConfig {
                 ParquetCurrentAnsLookupV2::TABLE_NAME.to_string(),
                 ParquetCurrentAnsPrimaryNameV2::TABLE_NAME.to_string(),
             ]),
+            // Must match tables ParquetFungibleAssetExtractor actually emits. The
+            // current-balance parquet types are never written; leftover names get
+            // no processor_status row and, once missing rows count as version 0,
+            // pin resume to the start of the chain.
             ProcessorName::ParquetFungibleAssetProcessor => HashSet::from([
                 ParquetFungibleAssetActivity::TABLE_NAME.to_string(),
                 ParquetFungibleAssetBalance::TABLE_NAME.to_string(),
-                ParquetCurrentFungibleAssetBalance::TABLE_NAME.to_string(),
-                ParquetCurrentUnifiedFungibleAssetBalance::TABLE_NAME.to_string(),
                 ParquetFungibleAssetMetadataModel::TABLE_NAME.to_string(),
+                ParquetFungibleAssetToCoinMapping::TABLE_NAME.to_string(),
             ]),
             ProcessorName::ParquetTransactionMetadataProcessor => {
                 HashSet::from([ParquetWriteSetSize::TABLE_NAME.to_string()])
@@ -407,5 +408,50 @@ mod tests {
 
         let table_names = result.unwrap();
         assert_eq!(table_names, vec!["transactions".to_string(),]);
+    }
+
+    #[test]
+    fn test_parquet_fungible_asset_table_names_match_extractor_writes() {
+        // Resume queries every name in this set. Extra names never get a
+        // processor_status row (extractor does not write them). Once missing
+        // rows count as version 0, those leftovers pin resume to the start.
+        let resume_tables =
+            ProcessorConfig::table_names(&ProcessorName::ParquetFungibleAssetProcessor);
+        let extractor_writes = HashSet::from([
+            ParquetFungibleAssetActivity::TABLE_NAME.to_string(),
+            ParquetFungibleAssetBalance::TABLE_NAME.to_string(),
+            ParquetFungibleAssetMetadataModel::TABLE_NAME.to_string(),
+            ParquetFungibleAssetToCoinMapping::TABLE_NAME.to_string(),
+        ]);
+        assert_eq!(resume_tables, extractor_writes);
+        assert!(!resume_tables.contains("current_fungible_asset_balances"));
+        assert!(!resume_tables.contains("current_fungible_asset_balances_legacy"));
+    }
+
+    #[test]
+    fn test_parquet_fungible_asset_empty_backfill_status_keys() {
+        let config =
+            ProcessorConfig::ParquetFungibleAssetProcessor(ParquetDefaultProcessorConfig {
+                backfill_table: HashSet::new(),
+                channel_size: 10,
+                max_buffer_size: 100000,
+                upload_interval: 1800,
+            });
+
+        let table_names: HashSet<String> = config
+            .get_processor_status_table_names()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let expected: HashSet<String> = [
+            "fungible_asset_activities",
+            "fungible_asset_balances",
+            "fungible_asset_metadata",
+            "fungible_asset_to_coin_mappings",
+        ]
+        .into_iter()
+        .map(|table| format!("parquet_fungible_asset_processor.{table}"))
+        .collect();
+        assert_eq!(table_names, expected);
     }
 }
