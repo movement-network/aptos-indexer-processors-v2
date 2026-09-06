@@ -612,6 +612,7 @@ impl From<CurrentUnifiedFungibleAssetBalance> for PostgresCurrentUnifiedFungible
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processors::fungible_asset::fungible_asset_models::v2_fungible_asset_utils::FungibleAssetStoreDeletionEvent;
 
     #[test]
     fn test_is_primary() {
@@ -661,5 +662,90 @@ mod tests {
             *APT_METADATA_ADDRESS_HEX
         );
         assert_eq!(get_paired_metadata_address("0x66c34778730acbb120cefa57a3d98fd21e0c8b3a51e9baee530088b2e444e94c::moon_coin::MoonCoin"), "0xf772c28c069aa7e4417d85d771957eb3c5c11b5bf90b1965cda23b899ebc0384");
+    }
+
+    fn object_group_delete_resource(address: &str) -> DeleteResource {
+        use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::MoveStructTag;
+        DeleteResource {
+            address: address.to_string(),
+            state_key_hash: vec![0u8; 32],
+            type_str: "0x1::object::ObjectGroup".to_string(),
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectGroup".to_string(),
+                generic_type_params: vec![],
+            }),
+        }
+    }
+
+    fn deleted_store_event(
+        store: &str,
+        owner: &str,
+        metadata: &str,
+    ) -> FungibleAssetStoreDeletionEvent {
+        FungibleAssetStoreDeletionEvent {
+            store: store.to_string(),
+            owner: owner.to_string(),
+            metadata: metadata.to_string(),
+        }
+    }
+
+    #[test]
+    fn deleted_store_lookup_misses_when_map_key_is_not_standardized() {
+        let raw_store = "0xabc";
+        assert_ne!(
+            standardize_address(raw_store),
+            raw_store,
+            "precondition: event JSON store addresses can be shorter than 64 hex chars"
+        );
+
+        let mut map: StoreAddressToDeletedFungibleAssetStoreEvent = AHashMap::new();
+        map.insert(
+            raw_store.to_string(),
+            deleted_store_event(raw_store, "0xdef", "0x1"),
+        );
+
+        let result = FungibleAssetBalance::get_v2_from_delete_resource(
+            &object_group_delete_resource(raw_store),
+            0,
+            1,
+            chrono::NaiveDateTime::default(),
+            &map,
+        )
+        .unwrap();
+        assert!(
+            result.is_none(),
+            "unpadded store key must not match standardized resource_address"
+        );
+    }
+
+    #[test]
+    fn deleted_store_balance_uses_standardized_store_key() {
+        let raw_store = "0xabc";
+        let raw_owner = "0xdef";
+        let raw_metadata = "0x1";
+        let mut map: StoreAddressToDeletedFungibleAssetStoreEvent = AHashMap::new();
+        map.insert(
+            standardize_address(raw_store),
+            deleted_store_event(raw_store, raw_owner, raw_metadata),
+        );
+
+        let result = FungibleAssetBalance::get_v2_from_delete_resource(
+            &object_group_delete_resource(raw_store),
+            7,
+            42,
+            chrono::NaiveDateTime::default(),
+            &map,
+        )
+        .unwrap()
+        .expect("standardized store key must match deleted ObjectGroup");
+
+        assert_eq!(result.storage_id, standardize_address(raw_store));
+        assert_eq!(result.owner_address, standardize_address(raw_owner));
+        assert_eq!(result.asset_type, standardize_address(raw_metadata));
+        assert_eq!(result.amount, BigDecimal::zero());
+        assert_eq!(result.transaction_version, 42);
+        assert_eq!(result.write_set_change_index, 7);
     }
 }

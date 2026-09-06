@@ -138,8 +138,10 @@ impl FungibleAssetActivity {
                         store_address_to_deleted_fa_store_events.get(&storage_id);
                     match deleted_fa_store_event {
                         Some(deleted_fa_store_event) => {
-                            maybe_owner_address = Some(deleted_fa_store_event.owner.clone());
-                            maybe_asset_type = Some(deleted_fa_store_event.metadata.clone());
+                            maybe_owner_address =
+                                Some(standardize_address(&deleted_fa_store_event.owner));
+                            maybe_asset_type =
+                                Some(standardize_address(&deleted_fa_store_event.metadata));
                         },
                         None => {
                             // There might not be a deletion event if the transaction was committed before FungibleStoreDeletion
@@ -415,5 +417,95 @@ impl From<FungibleAssetActivity> for PostgresFungibleAssetActivity {
             transaction_timestamp: raw.transaction_timestamp,
             storage_refund_amount: raw.storage_refund_amount,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{Event, EventKey};
+
+    fn withdraw_v2_event(store: &str, amount: &str) -> Event {
+        Event {
+            key: Some(EventKey {
+                account_address: "0x0".to_string(),
+                creation_number: 0,
+            }),
+            sequence_number: 0,
+            type_str: "0x1::fungible_asset::Withdraw".to_string(),
+            data: format!(r#"{{"store":"{store}","amount":"{amount}"}}"#),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn deleted_store_activity_standardizes_owner_and_asset_type() {
+        let raw_store = "0xabc";
+        let raw_owner = "0xdef";
+        let raw_metadata = "0x1";
+        let mut map: StoreAddressToDeletedFungibleAssetStoreEvent = AHashMap::new();
+        map.insert(
+            standardize_address(raw_store),
+            FungibleAssetStoreDeletionEvent {
+                store: raw_store.to_string(),
+                owner: raw_owner.to_string(),
+                metadata: raw_metadata.to_string(),
+            },
+        );
+
+        let activity = FungibleAssetActivity::get_v2_from_event(
+            &withdraw_v2_event(raw_store, "100"),
+            99,
+            1,
+            chrono::NaiveDateTime::default(),
+            3,
+            &None,
+            &AHashMap::new(),
+            &map,
+        )
+        .unwrap()
+        .expect("deletion event must supply owner/asset when ObjectCore is gone");
+
+        assert_eq!(activity.storage_id, standardize_address(raw_store));
+        assert_eq!(
+            activity.owner_address.as_deref(),
+            Some(standardize_address(raw_owner).as_str())
+        );
+        assert_eq!(
+            activity.asset_type.as_deref(),
+            Some(standardize_address(raw_metadata).as_str())
+        );
+        assert_eq!(activity.amount, Some(BigDecimal::from(100)));
+        assert_eq!(activity.transaction_version, 99);
+        assert_eq!(activity.event_index, 3);
+    }
+
+    #[test]
+    fn deleted_store_activity_skips_owner_when_map_key_is_not_standardized() {
+        let raw_store = "0xabc";
+        let mut map: StoreAddressToDeletedFungibleAssetStoreEvent = AHashMap::new();
+        map.insert(raw_store.to_string(), FungibleAssetStoreDeletionEvent {
+            store: raw_store.to_string(),
+            owner: "0xdef".to_string(),
+            metadata: "0x1".to_string(),
+        });
+
+        let activity = FungibleAssetActivity::get_v2_from_event(
+            &withdraw_v2_event(raw_store, "100"),
+            1,
+            1,
+            chrono::NaiveDateTime::default(),
+            0,
+            &None,
+            &AHashMap::new(),
+            &map,
+        )
+        .unwrap()
+        .expect("withdraw still produces an activity row");
+
+        assert!(
+            activity.owner_address.is_none() && activity.asset_type.is_none(),
+            "unpadded store key must not match standardized storage_id"
+        );
     }
 }
