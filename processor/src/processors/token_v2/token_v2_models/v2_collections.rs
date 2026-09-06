@@ -37,8 +37,6 @@ use serde::{Deserialize, Serialize};
 // PK of current_collections_v2, i.e. collection_id
 pub type CurrentCollectionV2PK = String;
 
-pub const DEFAULT_CREATOR_ADDRESS: &str = "unknown";
-
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize)]
 #[diesel(primary_key(transaction_version, write_set_change_index))]
 #[diesel(table_name = collections_v2)]
@@ -227,12 +225,15 @@ impl CollectionV2 {
                 Some(ca) => ca,
                 None => match db_context {
                     None => {
+                        // Parquet has no current_collections_v2 lookup.
+                        // A placeholder creator ("unknown") is hashed into
+                        // collection_id, so skip rather than persist a wrong PK.
                         tracing::debug!(
                             transaction_version = txn_version,
                             lookup_key = &table_handle,
-                            "Avoiding db lookup for Parquet."
+                            "Skipping v1 collection write: no in-batch creator mapping and no DB lookup (Parquet)."
                         );
-                        DEFAULT_CREATOR_ADDRESS.to_string()
+                        return Ok(None);
                     },
                     Some(db_context) => {
                         match Self::get_collection_creator_for_v1(
@@ -403,5 +404,85 @@ impl From<CollectionV2> for ParquetCollectionV2 {
             token_standard: collection.token_standard,
             block_timestamp: collection.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        WriteTableData, WriteTableItem,
+    };
+    use chrono::NaiveDateTime;
+
+    fn collection_data_table_item(handle: &str, name: &str) -> WriteTableItem {
+        WriteTableItem {
+            handle: handle.to_string(),
+            data: Some(WriteTableData {
+                key: format!("\"{name}\""),
+                key_type: "0x1::string::String".to_string(),
+                value: serde_json::json!({
+                    "description": "a collection",
+                    "maximum": "1000",
+                    "mutability_config": {
+                        "description": true,
+                        "maximum": true,
+                        "uri": true
+                    },
+                    "name": name,
+                    "supply": "1",
+                    "uri": "https://example.com"
+                })
+                .to_string(),
+                value_type: "0x3::token::CollectionData".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unknown_creator_corrupts_collection_id() {
+        let from_unknown =
+            CollectionDataIdType::new("unknown".to_string(), "Cool Cats".to_string()).to_id();
+        let from_real_creator = CollectionDataIdType::new(
+            "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            "Cool Cats".to_string(),
+        )
+        .to_id();
+        assert_ne!(
+            from_unknown, from_real_creator,
+            "placeholder creator must not be hashed into collection_id"
+        );
+        // Same collection name + shared "unknown" creator also collides
+        // across distinct real creators.
+        let from_other_creator = CollectionDataIdType::new(
+            "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+            "Cool Cats".to_string(),
+        )
+        .to_id();
+        assert_ne!(from_real_creator, from_other_creator);
+        assert_eq!(
+            CollectionDataIdType::new("unknown".to_string(), "Cool Cats".to_string()).to_id(),
+            from_unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn parquet_write_path_skips_instead_of_unknown_collection_id() {
+        let table_item = collection_data_table_item("0xabc", "Cool Cats");
+        let result = CollectionV2::get_v1_from_write_table_item(
+            &table_item,
+            42,
+            0,
+            NaiveDateTime::UNIX_EPOCH,
+            &TableHandleToOwner::new(),
+            &mut None,
+        )
+        .await
+        .expect("missing creator must not fail the write");
+        assert!(
+            result.is_none(),
+            "parquet must skip rather than persist creator_address=\"unknown\" / a corrupted collection_id"
+        );
     }
 }
