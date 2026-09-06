@@ -87,7 +87,6 @@ impl TokenDataV2 {
         if let Some(inner) = &TokenV2::from_write_resource(write_resource)? {
             let token_data_id = standardize_address(&write_resource.address.to_string());
             let mut token_name = inner.get_name_trunc();
-            let is_fungible_v2;
             // Get token properties from 0x4::property_map::PropertyMap
             let mut token_properties = serde_json::Value::Null;
             // TokenV2 was identified. Missing ObjectCore is not "this write
@@ -102,11 +101,7 @@ impl TokenDataV2 {
                 &token_data_id,
             )?;
             let fungible_asset_metadata = object_metadata.fungible_asset_metadata.as_ref();
-            if fungible_asset_metadata.is_some() {
-                is_fungible_v2 = Some(true);
-            } else {
-                is_fungible_v2 = Some(false);
-            }
+            let is_fungible_v2 = Some(fungible_asset_metadata.is_some());
             token_properties = object_metadata
                 .property_map
                 .as_ref()
