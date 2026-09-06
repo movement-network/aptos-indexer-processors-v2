@@ -238,6 +238,7 @@ pub async fn get_parquet_end_version(
 /// This should return the minimum of the last success version of the processors in the list.
 /// If any of the tables handled by the parquet processor has no entry, it should use 0 as a default value.
 /// To avoid skipping any versions, the minimum of the last success version should be used as the starting version.
+/// Query failures are returned as errors rather than dropped.
 async fn get_min_processed_version_from_db(
     db_pool: ArcDbPool,
     table_names: Vec<String>,
@@ -268,28 +269,25 @@ async fn get_min_processed_version_from_db(
 
     let results = futures::future::join_all(queries).await;
 
-    // Collect results and find the minimum processed version
-    let min_processed_version = results
-        .into_iter()
-        .filter_map(|res| {
-            match res {
-                // If the result is `Ok`, proceed to check the status
-                Ok(Some(status)) => {
-                    // Return the version if the status contains a version
-                    Some(status.last_success_version as u64)
-                },
-                // Handle specific cases where `Ok` contains `None` (no status found)
-                Ok(None) => None,
-                // TODO: If the result is an `Err`, what should we do?
-                Err(e) => {
-                    eprintln!("Error fetching processor status: {e:?}");
-                    None
-                },
-            }
-        })
-        .min();
+    min_processed_version_from_query_results(
+        results
+            .into_iter()
+            .map(|res| res.map(|status| status.map(|s| s.last_success_version as u64))),
+    )
+}
 
-    Ok(min_processed_version)
+/// Reduce per-table `processor_status` query results to the minimum last success version.
+///
+/// A missing row (`Ok(None)`) counts as version 0 so a new or lagging table cannot
+/// resume at another table's watermark and skip versions forever.
+/// Query failures are propagated; silently dropping them would have the same skip-hole effect.
+fn min_processed_version_from_query_results(
+    results: impl IntoIterator<Item = Result<Option<u64>, ProcessorError>>,
+) -> Result<Option<u64>, ProcessorError> {
+    results.into_iter().try_fold(None, |min_so_far, res| {
+        let version = res?.unwrap_or(0);
+        Ok(Some(min_so_far.map_or(version, |m| m.min(version))))
+    })
 }
 
 async fn get_parquet_backfill_statuses(
@@ -371,6 +369,48 @@ mod tests {
     };
     use diesel_async::RunQueryDsl;
     use url::Url;
+
+    #[test]
+    fn min_processed_version_all_tables_present_uses_min() {
+        let results = [Ok(Some(100)), Ok(Some(10)), Ok(Some(50))];
+        assert_eq!(
+            min_processed_version_from_query_results(results).unwrap(),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn min_processed_version_missing_table_counts_as_zero() {
+        // A new/lagging table has no processor_status row. Counting it as 0
+        // prevents resume at another table's watermark (e.g. 100), which would
+        // skip versions 0..=99 for the missing table forever.
+        let results = [Ok(Some(100)), Ok(None), Ok(Some(50))];
+        assert_eq!(
+            min_processed_version_from_query_results(results).unwrap(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn min_processed_version_query_error_is_propagated() {
+        let results = [
+            Ok(Some(100)),
+            Err(ProcessorError::ProcessError {
+                message: "db down".to_string(),
+            }),
+            Ok(Some(50)),
+        ];
+        assert!(min_processed_version_from_query_results(results).is_err());
+    }
+
+    #[test]
+    fn min_processed_version_empty_results_is_none() {
+        let results: [Result<Option<u64>, ProcessorError>; 0] = [];
+        assert_eq!(
+            min_processed_version_from_query_results(results).unwrap(),
+            None
+        );
+    }
 
     fn create_indexer_config(
         db_url: String,
@@ -486,6 +526,55 @@ mod tests {
 
         assert_eq!(starting_version, Some(last_success_version as u64));
         assert_eq!(end_version, None);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::needless_return)]
+    async fn test_bootstrap_missing_table_does_not_skip_to_other_table_watermark() {
+        // Only one of N parquet tables has a processor_status row. The missing
+        // tables must pull the starting version back to the config initial (0),
+        // not the checkpointed table's watermark.
+        let last_success_version = 100;
+        let indexer_processor_config = create_indexer_config(
+            "unused".to_string(),
+            ProcessorMode::Default(BootStrapConfig {
+                initial_starting_version: 0,
+            }),
+        );
+
+        let mut db = PostgresTestDatabase::new();
+        db.setup().await.unwrap();
+        let conn_pool = new_db_pool(db.get_db_url().as_str(), Some(10))
+            .await
+            .expect("Failed to create connection pool");
+        run_migrations(db.get_db_url(), conn_pool.clone(), MIGRATIONS).await;
+        let table_names = indexer_processor_config
+            .processor_config
+            .get_processor_status_table_names()
+            .unwrap();
+        assert!(
+            table_names.len() > 1,
+            "test requires a multi-table parquet processor"
+        );
+
+        diesel::insert_into(
+            aptos_indexer_processor_sdk::postgres::processor_metadata_schema::processor_metadata::processor_status::table,
+        )
+        .values(ProcessorStatus {
+            processor: table_names[0].clone(),
+            last_success_version,
+            last_transaction_timestamp: None,
+        })
+        .execute(&mut conn_pool.clone().get().await.unwrap())
+        .await
+        .expect("Failed to insert processor status");
+
+        let starting_version =
+            get_parquet_starting_version(&indexer_processor_config, conn_pool.clone())
+                .await
+                .unwrap();
+
+        assert_eq!(starting_version, Some(0));
     }
 
     #[tokio::test]
