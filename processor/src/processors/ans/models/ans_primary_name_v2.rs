@@ -53,7 +53,13 @@ pub struct CurrentAnsPrimaryNameV2 {
 
 impl Ord for CurrentAnsPrimaryNameV2 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.registered_address.cmp(&other.registered_address)
+        // Must match current_ans_primary_name_v2 PK (registered_address, token_standard).
+        // Omitting token_standard treats v1 and v2 rows for the same address as Equal
+        // despite PartialEq, so .sort() leaves their relative order undefined and
+        // parallel upserts can deadlock on distinct PK tuples.
+        self.registered_address
+            .cmp(&other.registered_address)
+            .then(self.token_standard.cmp(&other.token_standard))
     }
 }
 
@@ -303,5 +309,37 @@ impl CurrentAnsPrimaryNameV2 {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn primary_name(registered_address: &str, token_standard: &str) -> CurrentAnsPrimaryNameV2 {
+        CurrentAnsPrimaryNameV2 {
+            registered_address: registered_address.to_string(),
+            token_standard: token_standard.to_string(),
+            domain: Some("example".to_string()),
+            subdomain: Some("www".to_string()),
+            token_name: Some("www.example.apt".to_string()),
+            is_deleted: false,
+            last_transaction_version: 1,
+        }
+    }
+
+    #[test]
+    fn ord_includes_token_standard_in_pk() {
+        let addr = "0x0000000000000000000000000000000000000000000000000000000000000001";
+        let v1 = primary_name(addr, "v1");
+        let v2 = primary_name(addr, "v2");
+        assert_ne!(v1, v2);
+        assert_ne!(v1.cmp(&v2), std::cmp::Ordering::Equal);
+        assert_eq!(v1.cmp(&v2), std::cmp::Ordering::Less);
+
+        let mut rows = vec![v2.clone(), v1.clone()];
+        rows.sort();
+        assert_eq!(rows[0].token_standard, "v1");
+        assert_eq!(rows[1].token_standard, "v2");
     }
 }

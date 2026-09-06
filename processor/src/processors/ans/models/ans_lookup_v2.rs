@@ -62,9 +62,14 @@ pub struct CurrentAnsLookupV2 {
 
 impl Ord for CurrentAnsLookupV2 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Must match current_ans_lookup_v2 PK (domain, subdomain, token_standard).
+        // Omitting token_standard treats v1 and v2 rows for the same name as Equal
+        // despite PartialEq, so .sort() leaves their relative order undefined and
+        // parallel upserts can deadlock on distinct PK tuples.
         self.domain
             .cmp(&other.domain)
             .then(self.subdomain.cmp(&other.subdomain))
+            .then(self.token_standard.cmp(&other.token_standard))
     }
 }
 
@@ -331,5 +336,40 @@ impl CurrentAnsLookupV2 {
             )));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(domain: &str, subdomain: &str, token_standard: &str) -> CurrentAnsLookupV2 {
+        CurrentAnsLookupV2 {
+            domain: domain.to_string(),
+            subdomain: subdomain.to_string(),
+            token_standard: token_standard.to_string(),
+            registered_address: None,
+            last_transaction_version: 1,
+            expiration_timestamp: chrono::DateTime::from_timestamp(0, 0)
+                .unwrap()
+                .naive_utc(),
+            token_name: String::new(),
+            is_deleted: false,
+            subdomain_expiration_policy: None,
+        }
+    }
+
+    #[test]
+    fn ord_includes_token_standard_in_pk() {
+        let v1 = lookup("example", "www", "v1");
+        let v2 = lookup("example", "www", "v2");
+        assert_ne!(v1, v2);
+        assert_ne!(v1.cmp(&v2), std::cmp::Ordering::Equal);
+        assert_eq!(v1.cmp(&v2), std::cmp::Ordering::Less);
+
+        let mut rows = vec![v2.clone(), v1.clone()];
+        rows.sort();
+        assert_eq!(rows[0].token_standard, "v1");
+        assert_eq!(rows[1].token_standard, "v2");
     }
 }
