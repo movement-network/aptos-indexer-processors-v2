@@ -95,36 +95,45 @@ impl CurrentDelegatedVoter {
             let pool_address = match vote_delegation_handle_to_pool_address.get(&table_handle) {
                 Some(pool_address) => pool_address.clone(),
                 None => {
-                    // look up from db
-                    Self::get_delegation_pool_address_by_table_handle(conn, &table_handle, query_retries, query_retry_delay_ms).await
-                        .unwrap_or_else(|_| {
+                    // look up from db. NotFound (backfill hole) is Ok(None) and
+                    // skips this write. Transient errors propagate so the batch
+                    // fails and the checkpoint does not advance.
+                    match Self::get_delegation_pool_address_by_table_handle(
+                        conn,
+                        &table_handle,
+                        query_retries,
+                        query_retry_delay_ms,
+                    )
+                    .await?
+                    {
+                        Some(pool_address) => pool_address,
+                        None => {
                             tracing::error!(
                                 transaction_version = txn_version,
                                 lookup_key = &table_handle,
                                 "Missing pool address for table handle. You probably should backfill db.",
                             );
-                            "".to_string()
-                        })
+                            return Ok(delegated_voter_map);
+                        },
+                    }
                 },
             };
-            if !pool_address.is_empty() {
-                for inner in vote_delegation_vector {
-                    let delegator_address = inner.get_delegator_address();
-                    let voter = inner.value.get_voter();
-                    let pending_voter = inner.value.get_pending_voter();
+            for inner in vote_delegation_vector {
+                let delegator_address = inner.get_delegator_address();
+                let voter = inner.value.get_voter();
+                let pending_voter = inner.value.get_pending_voter();
 
-                    let delegated_voter = CurrentDelegatedVoter {
-                        delegator_address: delegator_address.clone(),
-                        delegation_pool_address: pool_address.clone(),
-                        voter: Some(voter.clone()),
-                        pending_voter: Some(pending_voter.clone()),
-                        last_transaction_timestamp: txn_timestamp,
-                        last_transaction_version: txn_version,
-                        table_handle: Some(table_handle.clone()),
-                    };
-                    delegated_voter_map
-                        .insert((pool_address.clone(), delegator_address), delegated_voter);
-                }
+                let delegated_voter = CurrentDelegatedVoter {
+                    delegator_address: delegator_address.clone(),
+                    delegation_pool_address: pool_address.clone(),
+                    voter: Some(voter.clone()),
+                    pending_voter: Some(pending_voter.clone()),
+                    last_transaction_timestamp: txn_timestamp,
+                    last_transaction_version: txn_version,
+                    table_handle: Some(table_handle.clone()),
+                };
+                delegated_voter_map
+                    .insert((pool_address.clone(), delegator_address), delegated_voter);
             }
         }
         Ok(delegated_voter_map)
@@ -187,20 +196,30 @@ impl CurrentDelegatedVoter {
         Ok(None)
     }
 
+    /// Resolve `table_handle` → `delegation_pool_address` from
+    /// `current_delegated_voter`.
+    ///
+    /// `Ok(None)` is only Diesel `NotFound` after retries (mapping never
+    /// indexed). Any other exhausted error is `Err` so a transient failure
+    /// cannot skip a new vote-delegation write.
     pub async fn get_delegation_pool_address_by_table_handle(
         conn: &mut DbPoolConnection<'_>,
         table_handle: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Option<String>> {
         let mut tried = 0;
+        let mut last_err = None;
         while tried < query_retries {
             tried += 1;
             match CurrentDelegatedVoterQuery::get_by_table_handle(conn, table_handle).await {
                 Ok(current_delegated_voter_query_result) => {
-                    return Ok(current_delegated_voter_query_result.delegation_pool_address);
+                    return Ok(Some(
+                        current_delegated_voter_query_result.delegation_pool_address,
+                    ));
                 },
-                Err(_) => {
+                Err(e) => {
+                    last_err = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -208,9 +227,12 @@ impl CurrentDelegatedVoter {
                 },
             }
         }
-        Err(anyhow::anyhow!(
-            "Failed to get delegation pool address from vote delegation write table handle"
-        ))
+        match last_err {
+            Some(e) => pool_address_from_exhausted_lookup(e),
+            None => Err(anyhow::anyhow!(
+                "Failed to get delegation pool address from vote delegation write table handle: no lookup attempts (query_retries = 0)"
+            )),
+        }
     }
 
     pub async fn get_existence_by_pk(
@@ -240,6 +262,23 @@ impl CurrentDelegatedVoter {
             }
         }
         false
+    }
+}
+
+/// Classify a table-handle → pool-address lookup after retries are exhausted.
+///
+/// `NotFound` is a backfill hole: skip this vote-delegation write. Any other
+/// error (connection, timeout, deserialization) must propagate. The old path
+/// mapped every `Err` to `""` and skipped the write while the batch still
+/// succeeded, so a transient failure permanently dropped the row.
+pub(crate) fn pool_address_from_exhausted_lookup(
+    err: diesel::result::Error,
+) -> anyhow::Result<Option<String>> {
+    match err {
+        diesel::result::Error::NotFound => Ok(None),
+        other => Err(anyhow::anyhow!(
+            "Failed to get delegation pool address from vote delegation write table handle: {other}"
+        )),
     }
 }
 
@@ -279,5 +318,44 @@ impl Ord for CurrentDelegatedVoter {
 impl PartialOrd for CurrentDelegatedVoter {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pool_address_from_exhausted_lookup;
+    use diesel::result::Error;
+
+    #[test]
+    fn not_found_skips_write() {
+        assert_eq!(
+            pool_address_from_exhausted_lookup(Error::NotFound).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn connection_error_is_not_empty_skip() {
+        let err = Error::DeserializationError("connection reset".into());
+        let result = pool_address_from_exhausted_lookup(err);
+        assert!(
+            result.is_err(),
+            "lookup failure must not look like a missing mapping"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("delegation pool address"),
+            "error should name the pool-address lookup, got: {message}"
+        );
+        assert!(
+            !message.contains("NotFound"),
+            "transient error must not be classified as NotFound"
+        );
+    }
+
+    #[test]
+    fn query_builder_error_is_not_empty_skip() {
+        let err = Error::QueryBuilderError("broken connection".into());
+        assert!(pool_address_from_exhausted_lookup(err).is_err());
     }
 }
