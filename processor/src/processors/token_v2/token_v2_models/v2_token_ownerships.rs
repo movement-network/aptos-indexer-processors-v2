@@ -220,7 +220,7 @@ impl TokenOwnershipV2 {
                 token_standard: TokenStandard::V2.to_string(),
                 is_fungible_v2: None,
                 transaction_timestamp: token_data.transaction_timestamp,
-                non_transferrable_by_owner: Some(is_soulbound),
+                non_transferrable_by_owner: Some(non_transferrable_by_owner),
             });
             current_ownerships.insert(
                 (
@@ -244,7 +244,7 @@ impl TokenOwnershipV2 {
                     is_fungible_v2: None,
                     last_transaction_version: token_data.transaction_version,
                     last_transaction_timestamp: token_data.transaction_timestamp,
-                    non_transferrable_by_owner: Some(is_soulbound),
+                    non_transferrable_by_owner: Some(non_transferrable_by_owner),
                 },
             );
         }
@@ -833,5 +833,138 @@ impl From<CurrentTokenOwnershipV2> for PostgresCurrentTokenOwnershipV2 {
             last_transaction_timestamp: raw_item.last_transaction_timestamp,
             non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::{
+        objects::v2_object_utils::{
+            ObjectAggregatedData, ObjectCore, ObjectWithMetadata, Untransferable,
+        },
+        token_v2::token_v2_models::v2_token_utils::TransferEvent,
+    };
+
+    const TOKEN_ADDR: &str = "0xabc";
+    const PREV_OWNER: &str = "0xaaa";
+    const NEW_OWNER: &str = "0xdef";
+
+    fn txn_timestamp() -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    fn token_data(token_address: &str) -> TokenDataV2 {
+        TokenDataV2 {
+            transaction_version: 1,
+            write_set_change_index: 0,
+            token_data_id: standardize_address(token_address),
+            transaction_timestamp: txn_timestamp(),
+            ..Default::default()
+        }
+    }
+
+    fn object_core(allow_ungated_transfer: bool, owner: &str) -> ObjectCore {
+        serde_json::from_str(&format!(
+            r#"{{"allow_ungated_transfer":{allow_ungated_transfer},"guid_creation_num":"0","owner":"{owner}"}}"#
+        ))
+        .unwrap()
+    }
+
+    fn transfer_event(from: &str, to: &str, object: &str) -> TransferEvent {
+        serde_json::from_str(&format!(
+            r#"{{"from":"{from}","to":"{to}","object":"{object}"}}"#
+        ))
+        .unwrap()
+    }
+
+    fn object_metadatas(
+        token_address: &str,
+        allow_ungated_transfer: bool,
+        owner: &str,
+        untransferable: Option<Untransferable>,
+        transfers: Vec<(i64, TransferEvent)>,
+    ) -> ObjectAggregatedDataMapping {
+        let mut map = AHashMap::new();
+        map.insert(standardize_address(token_address), ObjectAggregatedData {
+            object: ObjectWithMetadata {
+                object_core: object_core(allow_ungated_transfer, owner),
+                state_key_hash: String::new(),
+            },
+            transfer_events: transfers,
+            untransferable,
+            ..ObjectAggregatedData::default()
+        });
+        map
+    }
+
+    fn previous_owner_rows<'a>(
+        ownerships: &'a [TokenOwnershipV2],
+        current: &'a AHashMap<CurrentTokenOwnershipV2PK, CurrentTokenOwnershipV2>,
+        prev_owner: &str,
+    ) -> (&'a TokenOwnershipV2, &'a CurrentTokenOwnershipV2) {
+        let prev = standardize_address(prev_owner);
+        let history = ownerships
+            .iter()
+            .find(|row| row.owner_address.as_deref() == Some(prev.as_str()) && row.amount.is_zero())
+            .expect("soft-delete transfer history row");
+        let current_row = current
+            .values()
+            .find(|row| row.owner_address == prev && row.amount.is_zero())
+            .expect("soft-delete current ownership row");
+        (history, current_row)
+    }
+
+    #[test]
+    fn transfer_rows_keep_owner_gated_flag_distinct_from_soulbound() {
+        // Untransferable present + allow_ungated_transfer=true is the only state
+        // where is_soulbound and non_transferrable_by_owner diverge. Transfer
+        // history used to copy is_soulbound into the owner-gated column.
+        let untransferable =
+            serde_json::from_str::<Untransferable>(r#"{"dummy_field":false}"#).unwrap();
+        let object_metadatas =
+            object_metadatas(TOKEN_ADDR, true, NEW_OWNER, Some(untransferable), vec![(
+                1,
+                transfer_event(PREV_OWNER, NEW_OWNER, TOKEN_ADDR),
+            )]);
+
+        let (ownerships, current) = TokenOwnershipV2::get_nft_v2_from_token_data(
+            &token_data(TOKEN_ADDR),
+            &object_metadatas,
+        )
+        .unwrap();
+
+        let new_owner = standardize_address(NEW_OWNER);
+        let current_owner = current
+            .values()
+            .find(|row| row.owner_address == new_owner)
+            .expect("current owner row");
+        assert_eq!(current_owner.is_soulbound_v2, Some(true));
+        assert_eq!(current_owner.non_transferrable_by_owner, Some(false));
+
+        let (history, previous_current) = previous_owner_rows(&ownerships, &current, PREV_OWNER);
+        assert_eq!(history.is_soulbound_v2, Some(true));
+        assert_eq!(history.non_transferrable_by_owner, Some(false));
+        assert_eq!(previous_current.is_soulbound_v2, Some(true));
+        assert_eq!(previous_current.non_transferrable_by_owner, Some(false));
+    }
+
+    #[test]
+    fn transfer_rows_mark_admin_gated_tokens_non_transferrable_by_owner() {
+        let object_metadatas = object_metadatas(TOKEN_ADDR, false, NEW_OWNER, None, vec![(
+            1,
+            transfer_event(PREV_OWNER, NEW_OWNER, TOKEN_ADDR),
+        )]);
+
+        let (ownerships, current) = TokenOwnershipV2::get_nft_v2_from_token_data(
+            &token_data(TOKEN_ADDR),
+            &object_metadatas,
+        )
+        .unwrap();
+
+        let (history, previous_current) = previous_owner_rows(&ownerships, &current, PREV_OWNER);
+        assert_eq!(history.is_soulbound_v2, Some(true));
+        assert_eq!(history.non_transferrable_by_owner, Some(true));
+        assert_eq!(previous_current.non_transferrable_by_owner, Some(true));
     }
 }
