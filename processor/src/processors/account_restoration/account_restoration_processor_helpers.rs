@@ -21,9 +21,13 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 lazy_static! {
-    pub static ref ROTATE_AUTH_KEY_ENTRY_FUNCTIONS: Vec<&'static str> = vec![
+    /// Entry functions that rotate the *sender's* authentication key.
+    ///
+    /// `rotate_authentication_key_with_rotation_capability` is intentionally
+    /// excluded: the delegate sender does not rotate their own key. That
+    /// function writes the *offerer's* `Account` resource instead.
+    pub static ref ROTATE_AUTH_KEY_SELF_ENTRY_FUNCTIONS: Vec<&'static str> = vec![
         "0x1::account::rotate_authentication_key",
-        "0x1::account::rotate_authentication_key_with_rotation_capability",
         "0x1::account::upsert_ed25519_backup_key_on_keyless_account",
     ];
 }
@@ -34,6 +38,9 @@ lazy_static! {
         "0x1::account::rotate_authentication_key_from_public_key",
     ];
 }
+
+const ROTATE_AUTH_KEY_WITH_CAPABILITY: &str =
+    "0x1::account::rotate_authentication_key_with_rotation_capability";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Account {
@@ -83,11 +90,15 @@ pub fn parse_account_restoration_models(
 
             // At the end of this loop we'll get all account addresses and their corresponding auth keys
             // with the following conditions:
-            // 1. Key rotation transaction
+            // 1. Key rotation transaction (including capability rotation of a non-sender)
             // 2. Auth key is different from account address
-            // 3. Multi-key transaction
+            // 3. Multi-key transaction (sender only)
 
             let key_rotation_event = KeyRotationToPublicKeyEvent::from_transaction(txn);
+            let event_new_auth_key = key_rotation_event
+                .as_ref()
+                .map(|event| standardize_address(&hex::encode(&event.new_auth_key)));
+            let mut helper_from_rotation_event = false;
             let mut multi_key_helper = signature.as_ref().and_then(|sig| {
                 PublicKeyAuthKeyHelper::get_multi_key_from_signature(sig, txn_version)
             });
@@ -98,46 +109,21 @@ pub fn parse_account_restoration_models(
                     {
                         let auth_key = standardize_address(&account.authentication_key);
                         let account_address = standardize_address(&wr.address);
-                        // If the this isn't a change on the sender account (i.e. it is a change of a recipient
-                        // account's token resource), we skip.
-                        if sender.as_ref() != Some(&account_address) {
-                            continue;
-                        }
-
-                        // If the transaction is an unverified key rotation transaction, we need to insert the auth key account address
-                        // with is_auth_key_used set to false.  This allows us to filter out accounts that are not actually owned by the
-                        // owner of the auth key.
-                        if ROTATE_AUTH_KEY_UNVERIFIED_ENTRY_FUNCTIONS
-                            .contains(&entry_function_id_str.as_deref().unwrap_or(""))
-                        {
+                        let is_sender = sender.as_ref() == Some(&account_address);
+                        if let Some(is_auth_key_used) = index_decision_for_account_write(
+                            is_sender,
+                            &auth_key,
+                            &account_address,
+                            entry_function_id_str.as_deref(),
+                            multi_key_helper.is_some(),
+                        ) {
                             auth_key_account_addresses.insert(
                                 account_address.clone(),
                                 AuthKeyAccountAddress {
                                     auth_key: auth_key.clone(),
                                     account_address,
                                     last_transaction_version: txn_version,
-                                    is_auth_key_used: false,
-                                },
-                            );
-                        }
-                        // In all other cases
-                        // - If the transaction is a verified key rotation transaction
-                        // - If the transaction is a multi-key transaction
-                        // - If the transaction is on a rotated account
-                        // we need to insert the auth key account address with is_auth_key_used set to true.
-                        else if ROTATE_AUTH_KEY_ENTRY_FUNCTIONS
-                            .contains(&entry_function_id_str.as_deref().unwrap_or(""))
-                            || auth_key != account_address
-                            || multi_key_helper.is_some()
-                            || key_rotation_event.is_some()
-                        {
-                            auth_key_account_addresses.insert(
-                                account_address.clone(),
-                                AuthKeyAccountAddress {
-                                    auth_key: auth_key.clone(),
-                                    account_address,
-                                    last_transaction_version: txn_version,
-                                    is_auth_key_used: true,
+                                    is_auth_key_used,
                                 },
                             );
                         }
@@ -152,20 +138,21 @@ pub fn parse_account_restoration_models(
                     &key_rotation_event,
                     txn_version,
                 );
+                helper_from_rotation_event = multi_key_helper.is_some();
             }
 
             if let Some(helper) = &multi_key_helper {
-                if let Some(sender) = sender {
-                    if let Some(auth_key_account_address) = auth_key_account_addresses.get(&sender)
-                    {
-                        public_key_auth_keys.extend(
-                            PublicKeyAuthKeyHelper::get_public_key_auth_keys(
-                                helper,
-                                &auth_key_account_address.auth_key,
-                                txn_version,
-                            ),
-                        );
-                    }
+                for auth_key in public_key_mapping_auth_keys(
+                    helper_from_rotation_event,
+                    event_new_auth_key.as_deref(),
+                    sender.as_deref(),
+                    &auth_key_account_addresses,
+                ) {
+                    public_key_auth_keys.extend(PublicKeyAuthKeyHelper::get_public_key_auth_keys(
+                        helper,
+                        &auth_key,
+                        txn_version,
+                    ));
                 }
             }
 
@@ -218,4 +205,186 @@ pub fn parse_account_restoration_models(
     // the latest entry will be the first one.
     all_auth_key_account_addresses.dedup_by(|a, b| a.account_address == b.account_address);
     (all_auth_key_account_addresses, all_public_key_auth_keys)
+}
+
+/// Decide whether an `Account` write should produce an `auth_key_account_addresses`
+/// row, and whether `is_auth_key_used` should be true.
+///
+/// `rotate_authentication_key_with_rotation_capability` writes the *offerer's*
+/// Account, not the delegate sender's. Treating that entry function as a
+/// sender-only rotation both:
+///   * drops the offerer's new auth-key mapping, and
+///   * falsely marks the delegate as having rotated.
+///
+/// Non-sender Account writes are kept only when `auth_key != account_address`
+/// (the offerer after a capability rotation, or any already-rotated account
+/// that was actually written). Incidental writes such as account creation
+/// inside a multi-key transaction still have `auth_key == account_address`
+/// and are skipped.
+fn index_decision_for_account_write(
+    is_sender: bool,
+    auth_key: &str,
+    account_address: &str,
+    entry_function_id_str: Option<&str>,
+    has_multi_key_helper: bool,
+) -> Option<bool> {
+    let entry_fn = entry_function_id_str.unwrap_or("");
+    let is_rotated_account = auth_key != account_address;
+
+    if !is_sender {
+        return is_rotated_account.then_some(true);
+    }
+
+    if ROTATE_AUTH_KEY_UNVERIFIED_ENTRY_FUNCTIONS.contains(&entry_fn) {
+        return Some(false);
+    }
+
+    if ROTATE_AUTH_KEY_SELF_ENTRY_FUNCTIONS.contains(&entry_fn)
+        || is_rotated_account
+        || has_multi_key_helper
+    {
+        return Some(true);
+    }
+
+    None
+}
+
+/// Auth keys to attach `public_key_auth_keys` rows to.
+///
+/// When the helper comes from `KeyRotationToPublicKey`, bind it to the
+/// account whose auth key matches the event (the offerer in a capability
+/// rotation), not the transaction sender.
+fn public_key_mapping_auth_keys(
+    helper_from_rotation_event: bool,
+    event_new_auth_key: Option<&str>,
+    sender: Option<&str>,
+    auth_key_account_addresses: &AHashMap<String, AuthKeyAccountAddress>,
+) -> Vec<String> {
+    if helper_from_rotation_event {
+        if let Some(new_auth_key) = event_new_auth_key {
+            return auth_key_account_addresses
+                .values()
+                .filter(|acct| acct.auth_key == new_auth_key)
+                .map(|acct| acct.auth_key.clone())
+                .collect();
+        }
+    }
+    if let Some(sender) = sender {
+        if let Some(acct) = auth_key_account_addresses.get(sender) {
+            return vec![acct.auth_key.clone()];
+        }
+    }
+    vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn acct(auth_key: &str, account_address: &str) -> AuthKeyAccountAddress {
+        AuthKeyAccountAddress {
+            auth_key: auth_key.to_string(),
+            account_address: account_address.to_string(),
+            last_transaction_version: 1,
+            is_auth_key_used: true,
+        }
+    }
+
+    #[test]
+    fn capability_rotation_indexes_offerer_not_delegate() {
+        let offerer = "0xbb";
+        let offerer_new_auth_key = "0xcc";
+        let delegate = "0xaa";
+
+        // Offerer Account write: new auth key, not the sender.
+        assert_eq!(
+            index_decision_for_account_write(
+                false,
+                offerer_new_auth_key,
+                offerer,
+                Some(ROTATE_AUTH_KEY_WITH_CAPABILITY),
+                false,
+            ),
+            Some(true)
+        );
+        // Delegate sender's sequence-number Account write is not a rotation.
+        assert_eq!(
+            index_decision_for_account_write(
+                true,
+                delegate,
+                delegate,
+                Some(ROTATE_AUTH_KEY_WITH_CAPABILITY),
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn self_rotation_still_indexes_sender() {
+        assert_eq!(
+            index_decision_for_account_write(
+                true,
+                "0xcc",
+                "0xaa",
+                Some("0x1::account::rotate_authentication_key"),
+                false,
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn multi_key_txn_does_not_index_newly_created_recipient() {
+        assert_eq!(
+            index_decision_for_account_write(false, "0xdd", "0xdd", None, true),
+            None
+        );
+        assert_eq!(
+            index_decision_for_account_write(true, "0xaa", "0xaa", None, true),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn unverified_rotation_marks_sender_unused() {
+        assert_eq!(
+            index_decision_for_account_write(
+                true,
+                "0xcc",
+                "0xaa",
+                Some("0x1::account::rotate_authentication_key_call"),
+                false,
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn rotation_event_public_keys_bind_to_offerer_auth_key() {
+        let offerer = "0xbb";
+        let offerer_new_auth_key = "0xcc";
+        let delegate = "0xaa";
+        let mut accounts = AHashMap::new();
+        accounts.insert(offerer.to_string(), acct(offerer_new_auth_key, offerer));
+
+        let keys = public_key_mapping_auth_keys(
+            true,
+            Some(offerer_new_auth_key),
+            Some(delegate),
+            &accounts,
+        );
+        assert_eq!(keys, vec![offerer_new_auth_key.to_string()]);
+    }
+
+    #[test]
+    fn signature_helper_public_keys_still_bind_to_sender() {
+        let sender = "0xaa";
+        let auth_key = "0xcc";
+        let mut accounts = AHashMap::new();
+        accounts.insert(sender.to_string(), acct(auth_key, sender));
+
+        let keys = public_key_mapping_auth_keys(false, None, Some(sender), &accounts);
+        assert_eq!(keys, vec![auth_key.to_string()]);
+    }
 }
