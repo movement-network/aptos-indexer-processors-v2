@@ -408,4 +408,39 @@ mod tests {
         let table_names = result.unwrap();
         assert_eq!(table_names, vec!["transactions".to_string(),]);
     }
+
+    #[test]
+    fn test_parquet_objects_table_names_match_extractor_writes() {
+        // ParquetCurrentObject used to share TABLE_NAME "objects" with ParquetObject.
+        // HashSet then collapsed to one name, so resume never queried current_objects.
+        let names = ProcessorConfig::table_names(&ProcessorName::ParquetObjectsProcessor);
+        let expected: HashSet<String> = ["objects", "current_objects"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(names, expected);
+        assert_eq!(ParquetCurrentObject::TABLE_NAME, "current_objects");
+        assert_ne!(ParquetCurrentObject::TABLE_NAME, ParquetObject::TABLE_NAME);
+    }
+
+    #[test]
+    fn test_parquet_objects_empty_backfill_status_keys() {
+        let config = ProcessorConfig::ParquetObjectsProcessor(ParquetDefaultProcessorConfig {
+            backfill_table: HashSet::new(),
+            channel_size: 10,
+            max_buffer_size: 100000,
+            upload_interval: 1800,
+        });
+
+        let table_names: HashSet<String> = config
+            .get_processor_status_table_names()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let expected: HashSet<String> = ["objects", "current_objects"]
+            .iter()
+            .map(|e| format!("parquet_objects_processor.{e}"))
+            .collect();
+        assert_eq!(table_names, expected);
+    }
 }
