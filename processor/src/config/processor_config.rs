@@ -166,14 +166,23 @@ impl ProcessorConfig {
             .get(processor_name)
             .ok_or_else(|| anyhow::anyhow!("Processor type not recognized"))?;
 
-        // Use the helper function for validation and mapping
+        // Both paths must return the same processor_status / backfill_alias keys
+        // that `save_parquet_processor_status` writes:
+        // `format_table_name(processor_name, parquet_type.to_string())`.
+        // Without the prefix, a configured `backfill_table` queries `move_resources`
+        // while the saver persists `parquet_default_processor.move_resources`, so
+        // resume never finds the checkpoint and restarts at initial_starting_version.
         if default_config.backfill_table.is_empty() {
             Ok(valid_table_names
                 .iter()
                 .map(|table_name| format_table_name(processor_name, table_name))
                 .collect())
         } else {
-            Self::validate_backfill_table_names(&default_config.backfill_table, valid_table_names)
+            Self::validate_backfill_table_names(
+                &default_config.backfill_table,
+                valid_table_names,
+                processor_name,
+            )
         }
     }
 
@@ -240,22 +249,27 @@ impl ProcessorConfig {
         }
     }
 
-    /// This is to validate table_name for the backfill table
+    /// Validate `backfill_table` entries and map them to the prefixed status keys
+    /// used by `save_parquet_processor_status`.
     fn validate_backfill_table_names(
         table_names: &HashSet<String>,
         valid_table_names: &HashSet<String>,
+        processor_name: &str,
     ) -> anyhow::Result<Vec<String>> {
         table_names
             .iter()
             .map(|table_name| {
-                if !valid_table_names.contains(&table_name.to_lowercase()) {
+                let normalized = table_name.to_lowercase();
+                if !valid_table_names.contains(&normalized) {
                     return Err(anyhow::anyhow!(
                         "Invalid table name '{}'. Expected one of: {:?}",
                         table_name,
                         valid_table_names
                     ));
                 }
-                Ok(table_name.clone())
+                // Lowercase so `MOVE_RESOURCES` matches the saver's
+                // `ParquetTypeEnum` snake_case / `NamedTable::TABLE_NAME`.
+                Ok(format_table_name(processor_name, &normalized))
             })
             .collect()
     }
@@ -341,9 +355,36 @@ mod tests {
 
         let table_names = result.unwrap();
         let table_names: HashSet<String> = table_names.into_iter().collect();
+        // Must match save_parquet_processor_status's
+        // format_table_name(processor_name, parquet_type).
         let expected_names: HashSet<String> =
-            ["move_resources".to_string()].iter().cloned().collect();
+            ["parquet_default_processor.move_resources".to_string()]
+                .iter()
+                .cloned()
+                .collect();
         assert_eq!(table_names, expected_names);
+    }
+
+    #[test]
+    fn test_backfill_table_names_match_saver_prefix_and_are_lowercased() {
+        let config = ProcessorConfig::ParquetDefaultProcessor(ParquetDefaultProcessorConfig {
+            backfill_table: HashSet::from(["Move_Resources".to_string()]),
+            channel_size: 10,
+            max_buffer_size: 100000,
+            upload_interval: 1800,
+        });
+
+        let table_names = config.get_processor_status_table_names().unwrap();
+        assert_eq!(
+            table_names,
+            vec!["parquet_default_processor.move_resources".to_string()]
+        );
+        // Same key the version tracker writes:
+        // format_table_name(config.name(), ParquetTypeEnum::MoveResources).
+        assert_eq!(
+            table_names[0],
+            format_table_name(config.name(), "move_resources")
+        );
     }
 
     #[test]
@@ -406,6 +447,9 @@ mod tests {
         assert!(result.is_ok());
 
         let table_names = result.unwrap();
-        assert_eq!(table_names, vec!["transactions".to_string(),]);
+        assert_eq!(
+            table_names,
+            vec!["parquet_default_processor.transactions".to_string()]
+        );
     }
 }
