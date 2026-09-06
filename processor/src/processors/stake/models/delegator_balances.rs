@@ -170,23 +170,22 @@ impl CurrentDelegatorBalance {
             {
                 Some(pool_address) => pool_address,
                 None => {
-                    match Self::get_staking_pool_from_inactive_share_handle(
-                        conn,
+                    // NotFound (backfill hole) is Ok(None) and skips this write.
+                    // Transient errors propagate so the batch fails and the
+                    // checkpoint does not advance.
+                    match apply_inactive_share_pool_lookup(
+                        Self::get_staking_pool_from_inactive_share_handle(
+                            conn,
+                            &inactive_pool_handle,
+                            query_retries,
+                            query_retry_delay_ms,
+                        )
+                        .await,
+                        txn_version,
                         &inactive_pool_handle,
-                        query_retries,
-                        query_retry_delay_ms,
-                    )
-                    .await
-                    {
-                        Ok(pool) => pool,
-                        Err(_) => {
-                            tracing::error!(
-                                transaction_version = txn_version,
-                                lookup_key = &inactive_pool_handle,
-                                "Failed to get staking pool address from inactive share handle. You probably should backfill db.",
-                            );
-                            return Ok(None);
-                        },
+                    )? {
+                        Some(pool) => pool,
+                        None => return Ok(None),
                     }
                 },
             };
@@ -308,16 +307,20 @@ impl CurrentDelegatorBalance {
                 .map(|metadata| metadata.staking_pool_address.clone())
             {
                 Some(pool_address) => pool_address,
-                None => Self::get_staking_pool_from_inactive_share_handle(
-                    conn,
+                None => match apply_inactive_share_pool_lookup(
+                    Self::get_staking_pool_from_inactive_share_handle(
+                        conn,
+                        &inactive_pool_handle,
+                        query_retries,
+                        query_retry_delay_ms,
+                    )
+                    .await,
+                    txn_version,
                     &inactive_pool_handle,
-                    query_retries,
-                    query_retry_delay_ms,
-                )
-                .await
-                .context(format!(
-                    "Failed to get staking pool from inactive share handle {inactive_pool_handle}, txn version {txn_version}"
-                ))?,
+                )? {
+                    Some(pool_address) => pool_address,
+                    None => return Ok(None),
+                },
             };
             let delegator_address = standardize_address(&delete_table_item.key.to_string());
 
@@ -409,20 +412,30 @@ impl CurrentDelegatorBalance {
         }
     }
 
+    /// Resolve `parent_table_handle` → `pool_address` from
+    /// `current_delegator_balances`.
+    ///
+    /// `Ok(None)` is only Diesel `NotFound` after retries (mapping never
+    /// indexed). Any other exhausted error is `Err` so a transient failure
+    /// cannot skip an inactive-share write while the checkpoint advances.
     pub async fn get_staking_pool_from_inactive_share_handle(
         conn: &mut DbPoolConnection<'_>,
         table_handle: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Option<String>> {
         let mut tried = 0;
+        let mut last_err = None;
         while tried < query_retries {
             tried += 1;
             match CurrentDelegatorBalanceQuery::get_by_inactive_share_handle(conn, table_handle)
                 .await
             {
-                Ok(current_delegator_balance) => return Ok(current_delegator_balance.pool_address),
-                Err(_) => {
+                Ok(current_delegator_balance) => {
+                    return Ok(Some(current_delegator_balance.pool_address));
+                },
+                Err(e) => {
+                    last_err = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -430,9 +443,12 @@ impl CurrentDelegatorBalance {
                 },
             }
         }
-        Err(anyhow::anyhow!(
-            "Failed to get staking pool address from inactive share handle"
-        ))
+        match last_err {
+            Some(e) => pool_address_from_exhausted_inactive_share_lookup(e),
+            None => Err(anyhow::anyhow!(
+                "Failed to get staking pool address from inactive share handle: no lookup attempts (query_retries = 0)"
+            )),
+        }
     }
 
     pub async fn from_transaction(
@@ -500,8 +516,7 @@ impl CurrentDelegatorBalance {
                             query_retry_delay_ms,
                             txn_timestamp,
                         )
-                        .await
-                        .unwrap()
+                        .await?
                     }
                 },
                 Change::WriteTableItem(table_item) => {
@@ -529,8 +544,7 @@ impl CurrentDelegatorBalance {
                             query_retry_delay_ms,
                             txn_timestamp,
                         )
-                        .await
-                        .unwrap()
+                        .await?
                     }
                 },
                 _ => None,
@@ -548,6 +562,52 @@ impl CurrentDelegatorBalance {
             }
         }
         Ok((delegator_balances, current_delegator_balances))
+    }
+}
+
+/// Classify a parent-handle → pool-address lookup after retries are exhausted.
+///
+/// `NotFound` is a backfill hole: skip this inactive-share write. Any other
+/// error (connection, timeout, deserialization) must propagate. The old path
+/// mapped every `Err` to `Ok(None)` and skipped the write while the batch
+/// still succeeded, so a transient failure permanently dropped the row and
+/// `VersionTrackerStep` still advanced the checkpoint.
+pub(crate) fn pool_address_from_exhausted_inactive_share_lookup(
+    err: diesel::result::Error,
+) -> anyhow::Result<Option<String>> {
+    match err {
+        diesel::result::Error::NotFound => Ok(None),
+        other => Err(anyhow::anyhow!(
+            "Failed to get staking pool address from inactive share handle: {other}"
+        )),
+    }
+}
+
+/// Apply a classified pool-address lookup to an inactive-share write or delete.
+///
+/// * `Ok(Some(addr))` — persist the row
+/// * `Ok(None)` — backfill hole; skip this write-set change
+/// * `Err(_)` — propagate so `from_transaction` / `parse_stake_data` fail and
+///   `StakeExtractor` returns `ProcessorError` (checkpoint does not advance)
+///
+/// The old write path mapped every lookup `Err` onto `Ok(None)`, which is the
+/// same signal as "this table item is not an inactive share".
+pub(crate) fn apply_inactive_share_pool_lookup(
+    lookup: anyhow::Result<Option<String>>,
+    txn_version: i64,
+    inactive_pool_handle: &str,
+) -> anyhow::Result<Option<String>> {
+    match lookup {
+        Ok(Some(pool)) => Ok(Some(pool)),
+        Ok(None) => {
+            tracing::error!(
+                transaction_version = txn_version,
+                lookup_key = inactive_pool_handle,
+                "Failed to get staking pool address from inactive share handle. You probably should backfill db.",
+            );
+            Ok(None)
+        },
+        Err(e) => Err(e),
     }
 }
 
@@ -700,5 +760,82 @@ impl From<DelegatorBalance> for PostgresDelegatorBalance {
             shares: base.shares,
             parent_table_handle: base.parent_table_handle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_inactive_share_pool_lookup, pool_address_from_exhausted_inactive_share_lookup,
+    };
+    use diesel::result::Error;
+
+    #[test]
+    fn not_found_skips_write() {
+        assert_eq!(
+            pool_address_from_exhausted_inactive_share_lookup(Error::NotFound).unwrap(),
+            None
+        );
+        assert_eq!(
+            apply_inactive_share_pool_lookup(
+                pool_address_from_exhausted_inactive_share_lookup(Error::NotFound),
+                42,
+                "0xhandle",
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn connection_error_is_not_ok_none_skip() {
+        let err = Error::DeserializationError("connection reset".into());
+        let result = pool_address_from_exhausted_inactive_share_lookup(err);
+        assert!(
+            result.is_err(),
+            "lookup failure must not look like a missing mapping"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("inactive share handle"),
+            "error should name the inactive-share lookup, got: {message}"
+        );
+        assert!(
+            !message.contains("NotFound"),
+            "transient error must not be classified as NotFound"
+        );
+    }
+
+    #[test]
+    fn query_builder_error_is_not_ok_none_skip() {
+        let err = Error::QueryBuilderError("broken connection".into());
+        assert!(pool_address_from_exhausted_inactive_share_lookup(err).is_err());
+    }
+
+    /// `get_inactive_share_from_write_table_item` used to map every lookup
+    /// error to `Ok(None)`. That is the same success signal as "this table
+    /// item is not an inactive share", so `from_transaction` / `parse_stake_data`
+    /// still returned `Ok` and `StakeExtractor` let `VersionTrackerStep`
+    /// advance the checkpoint.
+    ///
+    /// The write path now uses `apply_inactive_share_pool_lookup`: only
+    /// `Ok(None)` skips; `Err` stays `Err`.
+    #[test]
+    fn write_path_does_not_map_lookup_err_to_ok_none() {
+        let lookup_err = pool_address_from_exhausted_inactive_share_lookup(
+            Error::QueryBuilderError("connection timeout".into()),
+        );
+        let write_result = apply_inactive_share_pool_lookup(lookup_err, 99, "0xinactive");
+        assert!(
+            write_result.is_err(),
+            "transient lookup failure must fail the write, not skip the row"
+        );
+    }
+
+    #[test]
+    fn resolved_pool_is_kept() {
+        let pool = apply_inactive_share_pool_lookup(Ok(Some("0xpool".to_string())), 1, "0xhandle")
+            .unwrap();
+        assert_eq!(pool.as_deref(), Some("0xpool"));
     }
 }
