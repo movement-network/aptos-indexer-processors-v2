@@ -428,7 +428,9 @@ async fn propagates_hop2_evm_sources_from_b_to_c() {
 
     let b_rows = read_rows(&pool, B_ADDR).await;
     assert_eq!(b_rows.len(), 2, "B should inherit both of A's EVM sources");
-    assert!(b_rows.iter().all(|r| r.hops_min == 1 && r.evm_fund == BigDecimal::from(0)));
+    assert!(b_rows
+        .iter()
+        .all(|r| r.hops_min == 1 && r.evm_fund == BigDecimal::from(0)));
 
     let b_to_c_amt: u64 = 200;
     storer
@@ -462,8 +464,7 @@ async fn propagates_hop2_evm_sources_from_b_to_c() {
             BigDecimal::from(0),
             "E{i}: hop-2 is never a direct bridge inflow"
         );
-        let expected_tf = BigDecimal::from(b_to_c_amt)
-            * BigDecimal::from(amt)
+        let expected_tf = BigDecimal::from(b_to_c_amt) * BigDecimal::from(amt)
             / BigDecimal::from(seed_total)
             / BigDecimal::from(2);
         let diff = (&row.transfer_fund - &expected_tf).abs();
