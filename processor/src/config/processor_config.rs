@@ -375,10 +375,9 @@ mod tests {
         });
 
         let table_names = config.get_processor_status_table_names().unwrap();
-        assert_eq!(
-            table_names,
-            vec!["parquet_default_processor.move_resources".to_string()]
-        );
+        assert_eq!(table_names, vec![
+            "parquet_default_processor.move_resources".to_string()
+        ]);
         // Same key the version tracker writes:
         // format_table_name(config.name(), ParquetTypeEnum::MoveResources).
         assert_eq!(
@@ -447,9 +446,8 @@ mod tests {
         assert!(result.is_ok());
 
         let table_names = result.unwrap();
-        assert_eq!(
-            table_names,
-            vec!["parquet_default_processor.transactions".to_string()]
-        );
+        assert_eq!(table_names, vec![
+            "parquet_default_processor.transactions".to_string()
+        ]);
     }
 }
