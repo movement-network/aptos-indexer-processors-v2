@@ -19,6 +19,7 @@ use aptos_indexer_processor_sdk::{
 use lazy_static::lazy_static;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::max;
 
 lazy_static! {
     pub static ref ROTATE_AUTH_KEY_ENTRY_FUNCTIONS: Vec<&'static str> = vec![
@@ -177,45 +178,181 @@ pub fn parse_account_restoration_models(
         all_public_key_auth_keys.extend(public_key_auth_keys);
     }
 
-    let mut all_auth_key_account_addresses = all_auth_key_account_addresses
+    let all_auth_key_account_addresses = all_auth_key_account_addresses
         .into_values()
         .collect::<Vec<AuthKeyAccountAddress>>();
 
-    // Below we do sorting and deduplication. This is for a couple of reasons:
-    // 1. It makes the processor more efficient as there is less data I/O
-    // 2. Makes processing more consistent and easier to reason about
-    // 3. Handles cases where within the same version if there are multiple entries for the same public key.
-    //    In this case, if among any of the duplicatesis_public_key_used is true, we want to keep that entry.
+    // Deduplicate both tables so batch ON CONFLICT inserts cannot contain the same
+    // primary key twice (Postgres rejects "ON CONFLICT DO UPDATE command cannot
+    // affect row a second time").
+    (
+        deduplicate_auth_key_account_addresses(all_auth_key_account_addresses),
+        deduplicate_public_key_auth_keys(all_public_key_auth_keys),
+    )
+}
 
-    // Sort first to ensure consistent deduplication
-    all_public_key_auth_keys.sort_by(|a, b| {
-        a.public_key
-            .cmp(&b.public_key)
+/// Deduplicate `public_key_auth_keys` on the diesel PK
+/// `(public_key, public_key_type, auth_key)`.
+///
+/// The previous sort+dedup only collapsed rows that shared the same
+/// `last_transaction_version`. A multi-key account that sends two transactions
+/// in one batch therefore produced two rows with the same PK and different
+/// versions, which crashed the storer.
+///
+/// Keep the latest version and OR `is_public_key_used`: once a key has signed
+/// for an auth key it cannot become unused.
+fn deduplicate_public_key_auth_keys(
+    public_key_auth_keys: Vec<PublicKeyAuthKey>,
+) -> Vec<PublicKeyAuthKey> {
+    let mut deduped: AHashMap<(String, String, String), PublicKeyAuthKey> = AHashMap::new();
+    for key in public_key_auth_keys {
+        let pk = (
+            key.public_key.clone(),
+            key.public_key_type.clone(),
+            key.auth_key.clone(),
+        );
+        if let Some(existing) = deduped.get_mut(&pk) {
+            let take_metadata = key.last_transaction_version >= existing.last_transaction_version;
+            existing.is_public_key_used = existing.is_public_key_used || key.is_public_key_used;
+            existing.last_transaction_version = max(
+                existing.last_transaction_version,
+                key.last_transaction_version,
+            );
+            if take_metadata {
+                existing.account_public_key = key.account_public_key;
+                existing.signature_type = key.signature_type;
+            }
+        } else {
+            deduped.insert(pk, key);
+        }
+    }
+    let mut out: Vec<PublicKeyAuthKey> = deduped.into_values().collect();
+    // Stable PK order so chunked upserts cannot deadlock across workers.
+    out.sort_by(|a, b| {
+        a.auth_key
+            .cmp(&b.auth_key)
+            .then_with(|| a.public_key.cmp(&b.public_key))
             .then_with(|| a.public_key_type.cmp(&b.public_key_type))
-            .then_with(|| a.auth_key.cmp(&b.auth_key))
-            .then_with(|| a.last_transaction_version.cmp(&b.last_transaction_version))
-            .then_with(|| b.is_public_key_used.cmp(&a.is_public_key_used)) // true comes before false
     });
+    out
+}
 
-    // Deduplicate keys based on public_key, public_key_type, auth_key, and last_transaction_version.
-    // Since we sorted by public_key, public_key_type, auth_key, last_transaction_version, and is_public_key_used,
-    // if any duplicates exist, the ones with is_public_key_used set to true will be the first ones.
-    all_public_key_auth_keys.dedup_by(|a, b| {
-        a.public_key == b.public_key
-            && a.public_key_type == b.public_key_type
-            && a.auth_key == b.auth_key
-            && a.last_transaction_version == b.last_transaction_version
-    });
-
-    // Here we only want the latest entry for each account address.
-    all_auth_key_account_addresses.sort_by(|a, b| {
+/// Deduplicate `auth_key_account_addresses` on `account_address`.
+/// Keep the latest version as-is: `is_auth_key_used` can go true→false on an
+/// unverified rotation, so do not OR that flag.
+fn deduplicate_auth_key_account_addresses(
+    mut auth_key_account_addresses: Vec<AuthKeyAccountAddress>,
+) -> Vec<AuthKeyAccountAddress> {
+    auth_key_account_addresses.sort_by(|a, b| {
         a.account_address
             .cmp(&b.account_address)
             .then_with(|| b.last_transaction_version.cmp(&a.last_transaction_version))
     });
+    auth_key_account_addresses.dedup_by(|a, b| a.account_address == b.account_address);
+    auth_key_account_addresses
+}
 
-    // Deduplicate auth key account addresses based on account_address. Since we sorted by account_address and last_transaction_version,
-    // the latest entry will be the first one.
-    all_auth_key_account_addresses.dedup_by(|a, b| a.account_address == b.account_address);
-    (all_auth_key_account_addresses, all_public_key_auth_keys)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pk_row(
+        public_key: &str,
+        auth_key: &str,
+        version: i64,
+        is_public_key_used: bool,
+        account_public_key: &str,
+    ) -> PublicKeyAuthKey {
+        PublicKeyAuthKey {
+            public_key: public_key.to_string(),
+            public_key_type: "ed25519".to_string(),
+            auth_key: auth_key.to_string(),
+            account_public_key: account_public_key.to_string(),
+            is_public_key_used,
+            last_transaction_version: version,
+            signature_type: "multi_ed25519_signature".to_string(),
+        }
+    }
+
+    fn auth_row(
+        account_address: &str,
+        auth_key: &str,
+        version: i64,
+        is_auth_key_used: bool,
+    ) -> AuthKeyAccountAddress {
+        AuthKeyAccountAddress {
+            auth_key: auth_key.to_string(),
+            account_address: account_address.to_string(),
+            last_transaction_version: version,
+            is_auth_key_used,
+        }
+    }
+
+    #[test]
+    fn public_key_rows_at_different_versions_collapse_to_one_pk() {
+        // Same multi-ed25519 account sending two txs in one batch used to emit
+        // two rows with PK (auth_key, public_key, public_key_type) and crash
+        // diesel ON CONFLICT upsert.
+        let rows = vec![
+            pk_row("0xaaa", "0xauth", 100, true, "0xacct-v100"),
+            pk_row("0xaaa", "0xauth", 101, false, "0xacct-v101"),
+            pk_row("0xbbb", "0xauth", 101, false, "0xacct-v101"),
+        ];
+
+        let deduped = deduplicate_public_key_auth_keys(rows);
+        assert_eq!(deduped.len(), 2);
+
+        let aaa = deduped
+            .iter()
+            .find(|r| r.public_key == "0xaaa")
+            .expect("collapsed aaa row");
+        assert_eq!(aaa.last_transaction_version, 101);
+        assert!(
+            aaa.is_public_key_used,
+            "used=true from v100 must survive v101 unused"
+        );
+        assert_eq!(aaa.account_public_key, "0xacct-v101");
+
+        let bbb = deduped
+            .iter()
+            .find(|r| r.public_key == "0xbbb")
+            .expect("distinct key kept");
+        assert!(!bbb.is_public_key_used);
+        assert_eq!(bbb.last_transaction_version, 101);
+    }
+
+    #[test]
+    fn public_key_same_version_prefers_used_true() {
+        let rows = vec![
+            pk_row("0xaaa", "0xauth", 50, false, "0xacct"),
+            pk_row("0xaaa", "0xauth", 50, true, "0xacct"),
+        ];
+        let deduped = deduplicate_public_key_auth_keys(rows);
+        assert_eq!(deduped.len(), 1);
+        assert!(deduped[0].is_public_key_used);
+        assert_eq!(deduped[0].last_transaction_version, 50);
+    }
+
+    #[test]
+    fn auth_key_address_keeps_latest_version_without_or_ing_used() {
+        // Unverified rotation can set is_auth_key_used back to false; latest wins.
+        let rows = vec![
+            auth_row("0xacct", "0xold", 10, true),
+            auth_row("0xacct", "0xnew", 20, false),
+            auth_row("0xother", "0xother-auth", 15, true),
+        ];
+        let deduped = deduplicate_auth_key_account_addresses(rows);
+        assert_eq!(deduped.len(), 2);
+
+        let acct = deduped
+            .iter()
+            .find(|r| r.account_address == "0xacct")
+            .expect("acct row");
+        assert_eq!(acct.last_transaction_version, 20);
+        assert_eq!(acct.auth_key, "0xnew");
+        assert!(
+            !acct.is_auth_key_used,
+            "latest unverified rotation must not inherit used=true"
+        );
+    }
 }
