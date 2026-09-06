@@ -174,7 +174,13 @@ pub fn parse_multi_key_signature(
     let public_key_indices = get_public_key_indices_from_multi_key_signature(s);
 
     for (index, signature) in s.signatures.iter().enumerate() {
-        let any_public_key = s.public_keys.as_slice().get(index).unwrap();
+        // IndexedSignature.index is the public_keys slot that produced this signature,
+        // not the position in the signatures vec (same as MultiEd25519).
+        let any_public_key = s
+            .public_keys
+            .as_slice()
+            .get(public_key_indices[index])
+            .unwrap();
         let public_key = &any_public_key.public_key;
         let any_signature = signature.signature.as_ref().unwrap();
         let signature_bytes = get_any_signature_bytes(any_signature);
@@ -236,5 +242,139 @@ pub fn parse_abstraction_signature(
         signature: "Not implemented".into(),
         multi_agent_index,
         multi_sig_index: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        any_public_key, any_signature, AnyPublicKey, AnySignature, IndexedSignature, Keyless,
+    };
+    use chrono::DateTime;
+
+    #[allow(deprecated)]
+    fn keyless_sig(bytes: Vec<u8>) -> AnySignature {
+        AnySignature {
+            r#type: any_signature::Type::Keyless as i32,
+            signature: bytes.clone(),
+            signature_variant: Some(any_signature::SignatureVariant::Keyless(Keyless {
+                signature: bytes,
+            })),
+        }
+    }
+
+    fn multi_key_with_backup_at_index_1() -> MultiKeySignature {
+        MultiKeySignature {
+            public_keys: vec![
+                AnyPublicKey {
+                    r#type: any_public_key::Type::Ed25519 as i32,
+                    public_key: vec![0xAA; 32],
+                },
+                AnyPublicKey {
+                    r#type: any_public_key::Type::Keyless as i32,
+                    public_key: vec![0xBB; 32],
+                },
+            ],
+            signatures: vec![IndexedSignature {
+                index: 1,
+                signature: Some(keyless_sig(vec![0xCC; 8])),
+            }],
+            signatures_required: 1,
+        }
+    }
+
+    #[test]
+    fn parse_multi_key_uses_indexed_signature_public_key() {
+        let parsed = parse_multi_key_signature(
+            &multi_key_with_backup_at_index_1(),
+            "multi_key_signature",
+            &"0x1".to_string(),
+            42,
+            7,
+            true,
+            0,
+            None,
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].public_key,
+            format!("0x{}", hex::encode([0xBB; 32]))
+        );
+        assert_eq!(parsed[0].public_key_type.as_deref(), Some("keyless"));
+        assert_eq!(parsed[0].any_signature_type.as_deref(), Some("keyless"));
+        assert_eq!(parsed[0].public_key_indices, serde_json::json!([1]));
+        assert_eq!(parsed[0].multi_sig_index, 0);
+        assert_eq!(parsed[0].threshold, 1);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn parse_multi_key_maps_noncontiguous_signature_indices() {
+        let s = MultiKeySignature {
+            public_keys: vec![
+                AnyPublicKey {
+                    r#type: any_public_key::Type::Ed25519 as i32,
+                    public_key: vec![0x11; 32],
+                },
+                AnyPublicKey {
+                    r#type: any_public_key::Type::Secp256k1Ecdsa as i32,
+                    public_key: vec![0x22; 65],
+                },
+                AnyPublicKey {
+                    r#type: any_public_key::Type::Keyless as i32,
+                    public_key: vec![0x33; 32],
+                },
+            ],
+            signatures: vec![
+                IndexedSignature {
+                    index: 0,
+                    signature: Some(AnySignature {
+                        r#type: any_signature::Type::Ed25519 as i32,
+                        signature: vec![0x01; 64],
+                        signature_variant: Some(any_signature::SignatureVariant::Ed25519(
+                            aptos_indexer_processor_sdk::aptos_protos::transaction::v1::Ed25519 {
+                                signature: vec![0x01; 64],
+                            },
+                        )),
+                    }),
+                },
+                IndexedSignature {
+                    index: 2,
+                    signature: Some(keyless_sig(vec![0x03; 8])),
+                },
+            ],
+            signatures_required: 2,
+        };
+
+        let parsed = parse_multi_key_signature(
+            &s,
+            "multi_key_signature",
+            &"0x1".to_string(),
+            1,
+            1,
+            true,
+            0,
+            None,
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            parsed[0].public_key,
+            format!("0x{}", hex::encode([0x11; 32]))
+        );
+        assert_eq!(parsed[0].public_key_type.as_deref(), Some("ed25519"));
+        assert_eq!(parsed[0].multi_sig_index, 0);
+        assert_eq!(
+            parsed[1].public_key,
+            format!("0x{}", hex::encode([0x33; 32]))
+        );
+        assert_eq!(parsed[1].public_key_type.as_deref(), Some("keyless"));
+        assert_eq!(parsed[1].multi_sig_index, 1);
+        assert_eq!(parsed[0].public_key_indices, serde_json::json!([0, 2]));
+        assert_eq!(parsed[0].threshold, 2);
     }
 }
