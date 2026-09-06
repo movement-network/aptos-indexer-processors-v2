@@ -21,9 +21,10 @@
 //!   callers know to skip saving (not retry). No API call is made.
 //! - **Not in cache** → included in the Hypernative request.
 //!
-//! Entries are inserted only after a successful API response, so a failed request
-//! leaves the address uncached and retryable. `moka` enforces the TTL expiry and
-//! a maximum capacity automatically — no manual eviction needed.
+//! Entries are inserted only after a successful persist (`saver.save`), so a
+//! failed API request or a failed write leaves the address uncached and retryable.
+//! `moka` enforces the TTL expiry and a maximum capacity automatically — no
+//! manual eviction needed.
 
 pub use super::evm_storer::{DbScoreSaver, EvmScreeningDb};
 use super::{super::address_reputation_model::EvmRiskScore, lz_enricher::EVM_NULL_SENTINEL};
@@ -157,9 +158,9 @@ pub struct HypernativeClient {
     screener_policy_id: Option<String>,
     screener_url: String,
     rate_limiter: Arc<RateLimiter>,
-    /// Bounded TTL cache of successfully-screened addresses (lowercase key, unit value).
-    /// Entries are inserted only after a confirmed successful API response; `moka`
-    /// handles expiry (TTL) and capacity eviction automatically.
+    /// Bounded TTL cache of successfully-persisted addresses (lowercase key, unit value).
+    /// Entries are inserted only after `saver.save` succeeds; `moka` handles expiry
+    /// (TTL) and capacity eviction automatically.
     cache: moka::future::Cache<String, ()>,
     backoff_429: Duration,
 }
@@ -226,13 +227,20 @@ impl HypernativeClient {
         Ok(())
     }
 
+    /// Record that `addr` was successfully persisted so later batches skip it
+    /// for `ttl_secs`. Call only after `saver.save` succeeds.
+    pub async fn mark_persisted(&self, addr: &str) {
+        self.cache.insert(addr.to_lowercase(), ()).await;
+    }
+
     /// Screen a batch of EVM addresses in one API call.
     ///
     /// After acquiring a rate-limiter slot, addresses already present in the TTL
-    /// cache are returned as `HypernativeResult { duplicate: true }` without hitting
-    /// the API. Only uncached addresses are sent to Hypernative. On success, those
-    /// addresses are inserted into the cache; on any failure they remain uncached so
-    /// the retry mechanism can re-send them.
+    /// cache (populated only after a successful persist) are returned as
+    /// `HypernativeResult { duplicate: true }` without hitting the API. Only
+    /// uncached addresses are sent to Hypernative. This method does not insert
+    /// into the cache; the caller must call [`Self::mark_persisted`] after
+    /// `saver.save` succeeds so a failed persist stays retryable.
     pub async fn fetch_batch(&self, addresses: &[&str]) -> anyhow::Result<Vec<HypernativeResult>> {
         let permit = self.rate_limiter.acquire().await;
 
@@ -342,10 +350,8 @@ impl HypernativeClient {
             });
         }
 
-        // Cache only after fully successful parse so malformed responses stay retryable.
-        for &addr in &to_process {
-            self.cache.insert(addr.to_lowercase(), ()).await;
-        }
+        // Do not cache here: persist can still fail. `screen_evms` calls
+        // `mark_persisted` only after `saver.save` succeeds.
         results.extend(new_results);
 
         // permit drops here, freeing the concurrency slot.
@@ -411,8 +417,10 @@ pub fn compute_risk_score(evm: &str, result: &HypernativeResult, source: &str) -
 
 /// Screen a batch of EVM addresses: one Hypernative API call, compute and
 /// persist a score for each address in the batch, log every result.
-/// Returns `true` if the API call itself failed and the whole batch should be
-/// retried; addresses absent from the response get `risk_score = 0`.
+/// Returns `true` if the API call itself failed or any persist failed, so the
+/// whole batch should be retried. Addresses absent from the response get
+/// `risk_score = 0`. Successfully persisted addresses are cached for TTL
+/// dedup; failed persists stay uncached so a retry can write them.
 pub async fn screen_evms(
     hn: &HypernativeClient,
     saver: &dyn EvmScreeningDb,
@@ -447,10 +455,11 @@ pub async fn screen_evms(
         duplicate: false,
     };
 
+    let mut persist_failed = false;
     for evm in &addrs {
         let result = results.iter().find(|r| r.address.eq_ignore_ascii_case(evm));
 
-        // Skip addresses suppressed by the TTL cache.
+        // Skip addresses suppressed by the TTL cache (already persisted).
         if result.is_some_and(|r| r.duplicate) {
             info!(evm_address = %evm, "evm_fetch_loop: skipping in-flight duplicate");
             continue;
@@ -469,7 +478,9 @@ pub async fn screen_evms(
         );
         if let Err(e) = saver.save(&score).await {
             tracing::error!(evm_address = %evm, err = %e, "evm_fetch_loop: failed to save risk score");
+            persist_failed = true;
         } else {
+            hn.mark_persisted(evm).await;
             info!(
                 evm_address    = %score.evm_address,
                 risk_score     = %score.risk_score,
@@ -483,5 +494,5 @@ pub async fn screen_evms(
         }
     }
 
-    false
+    persist_failed
 }

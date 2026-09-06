@@ -30,7 +30,7 @@ use bigdecimal::BigDecimal;
 use processor::processors::address_reputation::{
     address_reputation_model::EvmRiskScore,
     evm_screening::{
-        hypernative::{EvmScreeningDb, HypernativeClient},
+        hypernative::{screen_evms, EvmScreeningDb, HypernativeClient},
         lz_enricher::{LzDb, LzEnricher},
         EnricherLoop,
     },
@@ -614,5 +614,126 @@ async fn test_malformed_response_exhausted_saves_error_score() {
         screening_request_count(&mock).await,
         MAX_RETRIES as usize,
         "should have made exactly MAX_RETRIES screening attempts on malformed responses"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cache-after-persist: a failed save must not TTL-skip a later write
+// ---------------------------------------------------------------------------
+
+/// In-memory saver that fails the first `fail_remaining` calls, then records scores.
+struct FailThenSaveDb {
+    fail_remaining: Mutex<u32>,
+    saved: Mutex<Vec<EvmRiskScore>>,
+}
+
+impl FailThenSaveDb {
+    fn new(fail_times: u32) -> Self {
+        Self {
+            fail_remaining: Mutex::new(fail_times),
+            saved: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn saved_scores(&self) -> Vec<EvmRiskScore> {
+        self.saved.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl EvmScreeningDb for FailThenSaveDb {
+    async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()> {
+        let mut remaining = self.fail_remaining.lock().unwrap();
+        if *remaining > 0 {
+            *remaining -= 1;
+            anyhow::bail!("injected persist failure");
+        }
+        self.saved.lock().unwrap().push(score.clone());
+        Ok(())
+    }
+
+    async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+        false
+    }
+
+    async fn load_pending_evms(&self) -> VecDeque<String> {
+        VecDeque::new()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_failed_save_is_not_cached_and_retry_persists() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(approve_body()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let db = FailThenSaveDb::new(1);
+    let evms = vec![TEST_EVM.to_string()];
+
+    // First screen: API succeeds, persist fails. Must retry and stay uncached.
+    assert!(
+        screen_evms(&hn, &db, &evms).await,
+        "persist failure should be retryable"
+    );
+    assert!(
+        db.saved_scores().is_empty(),
+        "failed persist must not record a score"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        1,
+        "first attempt should hit Hypernative"
+    );
+
+    // Second screen: same client (same TTL cache). Must hit the API again and save.
+    assert!(
+        !screen_evms(&hn, &db, &evms).await,
+        "successful persist should not request a retry"
+    );
+    let saved = db.saved_scores();
+    assert_eq!(
+        saved.len(),
+        1,
+        "retry must persist the score after save recovers"
+    );
+    assert_eq!(saved[0].evm_address.to_lowercase(), TEST_EVM);
+    assert_eq!(saved[0].recommendation.to_lowercase(), "approve");
+    assert_eq!(
+        screening_request_count(&mock).await,
+        2,
+        "failed persist must not TTL-skip the retry (would stay at 1 request)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_successful_save_is_cached_as_ttl_duplicate() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(approve_body()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let db = FailThenSaveDb::new(0);
+    let evms = vec![TEST_EVM.to_string()];
+
+    assert!(!screen_evms(&hn, &db, &evms).await);
+    assert_eq!(db.saved_scores().len(), 1);
+    assert_eq!(screening_request_count(&mock).await, 1);
+
+    // Same address within TTL: skip the API and do not write again.
+    assert!(!screen_evms(&hn, &db, &evms).await);
+    assert_eq!(
+        db.saved_scores().len(),
+        1,
+        "TTL cache should suppress a second persist"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        1,
+        "successful persist should cache and skip the next Hypernative call"
     );
 }
