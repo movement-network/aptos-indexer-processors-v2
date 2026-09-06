@@ -243,13 +243,13 @@ pub fn parse_abstraction_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::AbstractSignature;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::AbstractionSignature;
     use chrono::DateTime;
 
     fn abstraction_account_signature() -> AccountSignature {
         AccountSignature {
             r#type: AccountSignatureTypeEnum::Abstraction as i32,
-            signature: Some(AccountSignatureEnum::Abstraction(AbstractSignature {
+            signature: Some(AccountSignatureEnum::Abstraction(AbstractionSignature {
                 function_info: "0x1::account_abstraction::authenticate".to_string(),
                 signature: vec![0x11, 0x22],
             })),
