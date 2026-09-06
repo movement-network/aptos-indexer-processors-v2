@@ -37,7 +37,10 @@ use processor::processors::address_reputation::{
 };
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -101,8 +104,8 @@ impl EvmScreeningDb for MockScreeningDb {
         false
     }
 
-    async fn load_pending_evms(&self) -> VecDeque<String> {
-        self.pending.lock().unwrap().drain(..).collect()
+    async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>> {
+        Ok(self.pending.lock().unwrap().drain(..).collect())
     }
 }
 
@@ -614,5 +617,81 @@ async fn test_malformed_response_exhausted_saves_error_score() {
         screening_request_count(&mock).await,
         MAX_RETRIES as usize,
         "should have made exactly MAX_RETRIES screening attempts on malformed responses"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: load_pending_evms errors retry; parked EVMs are not skipped
+// ---------------------------------------------------------------------------
+
+struct FailThenOkScreeningDb {
+    remaining_failures: AtomicU32,
+    pending: Mutex<Vec<String>>,
+    tx: UnboundedSender<EvmRiskScore>,
+}
+
+#[async_trait]
+impl EvmScreeningDb for FailThenOkScreeningDb {
+    async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()> {
+        if score.risk_score != BigDecimal::from(0) {
+            let _ = self.tx.send(score.clone());
+        }
+        Ok(())
+    }
+
+    async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+        false
+    }
+
+    async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>> {
+        let left = self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
+        if left > 0 {
+            Err(anyhow::anyhow!("transient db error"))
+        } else {
+            Ok(self.pending.lock().unwrap().drain(..).collect())
+        }
+    }
+}
+
+/// A failed pending-EVM load used to become an empty Screening queue. The
+/// parked address was then skipped until a later reconnect/restart. After the
+/// fix the loop retries until the store answers and screens the parked EVM.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_load_pending_evms_error_retries_and_screens_parked() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(approve_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let db = Arc::new(FailThenOkScreeningDb {
+        remaining_failures: AtomicU32::new(2),
+        pending: Mutex::new(vec![TEST_EVM.to_string()]),
+        tx: score_tx,
+    }) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (_evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+
+    // Ping + 2 failed loads (10ms retry) + successful load + screen.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let score = score_rx.try_recv().expect(
+        "parked EVM must be screened after load_pending_evms recovers; \
+         a failed load must not look like an empty queue",
+    );
+    assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
+    assert_eq!(score.recommendation.to_lowercase(), "approve");
+    assert_eq!(
+        screening_request_count(&mock).await,
+        1,
+        "parked EVM should be screened once after the store recovers"
     );
 }

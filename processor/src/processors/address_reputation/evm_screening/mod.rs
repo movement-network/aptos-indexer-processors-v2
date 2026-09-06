@@ -1,5 +1,6 @@
 use self::{
     evm_connection::{EvmConnecting, EvmConnectionState, EvmScreening, HypernativeState},
+    evm_storer::load_pending_evms_retrying,
     hypernative::{EvmScreeningDb, HypernativeClient},
     lz_enricher::LzEnricher,
 };
@@ -107,7 +108,11 @@ impl EnricherLoop {
                     match result {
                         Ok(()) => {
                             info!("evm_fetch_loop: Hypernative connected; loading pending EVMs");
-                            let evm_queue = self.ctx.db.load_pending_evms().await;
+                            let evm_queue = load_pending_evms_retrying(
+                                self.ctx.db.as_ref(),
+                                self.ctx.retry_delay,
+                            )
+                            .await;
                             info!(pending_evms = evm_queue.len(), "evm_fetch_loop: pending EVMs loaded");
                             evm_screening_state = Box::new(HypernativeState { state: EvmScreening{ evm_queue }});
                         },
