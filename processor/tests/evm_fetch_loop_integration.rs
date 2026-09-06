@@ -333,6 +333,23 @@ fn malformed_body() -> serde_json::Value {
     })
 }
 
+/// HTTP 200 with no `data` array — previously treated as success (no retry).
+fn missing_data_body() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "error": null
+    })
+}
+
+/// HTTP 200 with an empty `data` array — same silent-success hole as missing `data`.
+fn empty_data_body() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": [],
+        "error": null
+    })
+}
+
 fn make_client(url: String) -> HypernativeClient {
     HypernativeClient::new(
         "id".to_string(),
@@ -614,5 +631,134 @@ async fn test_malformed_response_exhausted_saves_error_score() {
         screening_request_count(&mock).await,
         MAX_RETRIES as usize,
         "should have made exactly MAX_RETRIES screening attempts on malformed responses"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: HTTP 200 with no `data` array is retryable (not a silent success)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fetch_batch_missing_data_is_retryable_err() {
+    let mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(missing_data_body()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let err = hn
+        .fetch_batch(&[TEST_EVM])
+        .await
+        .expect_err("missing data array must be a retryable Err, not Ok");
+    assert!(
+        err.to_string().contains("data"),
+        "error should mention the missing data array, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fetch_batch_empty_data_is_retryable_err() {
+    let mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_data_body()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let err = hn
+        .fetch_batch(&[TEST_EVM])
+        .await
+        .expect_err("empty data array must be a retryable Err, not Ok");
+    assert!(
+        err.to_string().contains("data"),
+        "error should mention the empty data array, got: {err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_missing_data_array_exhausted_saves_error_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(missing_data_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        score_rx.try_recv().is_err(),
+        "must not persist a finished 0.1 'not available' score for a missing data array"
+    );
+    assert!(
+        mock_db.pending_addresses().contains(&TEST_EVM.to_string()),
+        "error score (score=0, to_be_updated) should be stored after missing-data exhaustion"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        MAX_RETRIES as usize,
+        "should have made exactly MAX_RETRIES screening attempts on missing data arrays"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_missing_data_array_recovers_saves_correct_score() {
+    let mock = MockServer::start().await;
+
+    mount_ping_mock(&mock).await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(missing_data_body()))
+        .up_to_n_times(2)
+        .mount(&mock)
+        .await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(approve_body()))
+        .mount(&mock)
+        .await;
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(mock.uri());
+    let (_guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    tokio::spawn(make_loop(db, guid_rx, evm_rx, hn).run());
+    evm_tx.send(TEST_EVM.to_string()).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let score = score_rx
+        .try_recv()
+        .expect("approve score should be saved after missing-data recovery");
+    assert_eq!(score.evm_address.to_lowercase(), TEST_EVM);
+    assert_eq!(score.recommendation.to_lowercase(), "approve");
+    assert!(
+        mock_db.pending_addresses().is_empty(),
+        "no error score should be stored on successful recovery"
+    );
+    assert_eq!(
+        screening_request_count(&mock).await,
+        3,
+        "expected 2 × missing-data + 1 × 200 = 3 screening requests"
     );
 }
