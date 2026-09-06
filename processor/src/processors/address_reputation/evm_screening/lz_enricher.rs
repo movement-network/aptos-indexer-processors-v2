@@ -109,7 +109,7 @@ impl LzEnricher {
             .and_then(|s| s.get("tx"))
             .and_then(|tx| tx.get("from"))
             .and_then(|v| v.as_str())
-            .map(str::to_owned);
+            .map(crate::processors::address_reputation::standardize_evm_address);
 
         match evm {
             Some(addr) => Ok(Some(addr)),

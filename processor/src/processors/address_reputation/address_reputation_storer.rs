@@ -4,7 +4,7 @@
 use crate::{
     processors::address_reputation::{
         address_reputation_config::AddressReputationConfig,
-        address_reputation_model::{BridgeInflow, TransferEdge},
+        address_reputation_model::{standardize_evm_address, BridgeInflow, TransferEdge},
     },
     schema,
 };
@@ -239,6 +239,7 @@ pub async fn upsert_bridge_seed(
     amount: &BigDecimal,
     ord: i64,
 ) -> Result<(), ProcessorError> {
+    let evm = standardize_evm_address(evm);
     let sql_str = "\
         INSERT INTO address_evm_sources \
             (movement_address, asset_type, evm_address, evm_fund, transfer_fund, \

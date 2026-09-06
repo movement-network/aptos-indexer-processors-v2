@@ -97,6 +97,7 @@ impl LzDb for DbLzStore {
     }
 
     async fn write_evm(&self, guid: &str, evm: &str) {
+        let evm = crate::processors::address_reputation::standardize_evm_address(evm);
         let mut conn = match self.pool.get().await {
             Ok(c) => c,
             Err(e) => {
@@ -112,7 +113,7 @@ impl LzDb for DbLzStore {
              RETURNING aptos_recipient, asset_type, amount, \
                        transaction_version, event_index",
         )
-        .bind::<Varchar, _>(evm)
+        .bind::<Varchar, _>(&evm)
         .bind::<Varchar, _>(guid)
         .get_results(&mut conn)
         .await
@@ -128,7 +129,7 @@ impl LzDb for DbLzStore {
             warn!(lz_guid = guid, evm_address = evm, "lz_enricher: UPDATE matched 0 rows — GUID not found in bridge_inflows or already resolved");
             return;
         }
-        if !self.propagate_evm || evm == EVM_NULL_SENTINEL {
+        if !self.propagate_evm || evm.as_str() == EVM_NULL_SENTINEL {
             return;
         }
 
@@ -147,7 +148,7 @@ impl LzDb for DbLzStore {
                 &mut conn,
                 &row.aptos_recipient,
                 asset,
-                evm,
+                &evm,
                 &row.amount,
                 ord,
             )

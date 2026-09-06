@@ -81,6 +81,21 @@ pub struct BridgeRegistryEntry {
     pub enabled: bool,
 }
 
+/// Canonicalize an EVM address for DB keys and joins.
+///
+/// Circle intent / LZ payload decoders emit lowercase `0x` + 40 hex via
+/// `hex::encode`. LZ Scan and Hypernative return EIP-55 checksum casing.
+/// `address_evm_sources` and `evm_address_risk_scores` use a case-sensitive
+/// Postgres PK / JOIN on `evm_address`, so mixed case splits one physical
+/// address into two rows and drops risk-score joins.
+pub fn standardize_evm_address(addr: &str) -> String {
+    let hex = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .unwrap_or(addr);
+    format!("0x{}", hex.to_ascii_lowercase())
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct EvmRiskScore {
     pub evm_address: String,
@@ -94,4 +109,33 @@ pub struct EvmRiskScore {
     /// set for error scores (risk_score=0) and cleared to `false` when a
     /// successful Hypernative result is saved.
     pub to_be_updated: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standardize_evm_address;
+
+    #[test]
+    fn checksum_and_lowercase_collapse_to_one_key() {
+        let checksummed = "0x8F5633d77Eb1D6bf6c0D357148135A91B0e1F87F";
+        let lower = "0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f";
+        let upper_prefix = "0X8F5633D77EB1D6BF6C0D357148135A91B0E1F87F";
+        assert_eq!(standardize_evm_address(checksummed), lower);
+        assert_eq!(standardize_evm_address(lower), lower);
+        assert_eq!(standardize_evm_address(upper_prefix), lower);
+        // Case-sensitive PK would treat these as distinct without normalization.
+        assert_ne!(checksummed, lower);
+        assert_eq!(
+            standardize_evm_address(checksummed),
+            standardize_evm_address(lower)
+        );
+    }
+
+    #[test]
+    fn sentinel_stays_canonical() {
+        assert_eq!(
+            standardize_evm_address("0x0000000000000000000000000000000000000000"),
+            "0x0000000000000000000000000000000000000000"
+        );
+    }
 }

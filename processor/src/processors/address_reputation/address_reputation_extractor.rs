@@ -5,7 +5,9 @@ use crate::{
     db::resources::FromWriteResource,
     processors::{
         address_reputation::{
-            address_reputation_model::{BridgeInflow, BridgeRegistryEntry, TransferEdge},
+            address_reputation_model::{
+                standardize_evm_address, BridgeInflow, BridgeRegistryEntry, TransferEdge,
+            },
             intent_payload, lz_payload,
         },
         objects::v2_object_utils::ObjectWithMetadata,
@@ -158,6 +160,9 @@ impl Processable for AddressReputationExtractor {
                             if inflow.evm_source.is_none() {
                                 inflow.evm_source = decode_payload_evm_source(txn, kind);
                             }
+                            inflow.evm_source = inflow
+                                .evm_source
+                                .map(|s| standardize_evm_address(&s));
                             if inflow.lz_guid.is_none() {
                                 inflow.lz_guid = extract_payload_guid(txn, kind);
                             }
@@ -464,7 +469,8 @@ fn parse_bridge_event(
     let evm_source = entry
         .evm_source_field_path
         .as_deref()
-        .and_then(|p| json_field(&v, p));
+        .and_then(|p| json_field(&v, p))
+        .map(|s| standardize_evm_address(&s));
     let recipient = json_field(&v, &entry.recipient_field_path)?;
     let amount = BigDecimal::from_str(&json_field(&v, &entry.amount_field_path)?).ok()?;
     let src_chain_id = entry
@@ -484,4 +490,39 @@ fn parse_bridge_event(
         lz_guid: None, // filled by the caller from the tx payload
         transaction_timestamp: block_timestamp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::DateTime;
+
+    fn ts() -> chrono::NaiveDateTime {
+        DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc()
+    }
+
+    #[test]
+    fn parse_bridge_event_lowercases_checksummed_evm_source() {
+        let entry = BridgeRegistryEntry {
+            bridge_name: "test".to_string(),
+            module_address: "0x1".to_string(),
+            event_type: "0x1::m::E".to_string(),
+            evm_source_field_path: Some("from".to_string()),
+            recipient_field_path: "to".to_string(),
+            amount_field_path: "amount".to_string(),
+            chain_id_field_path: None,
+            payload_kind: None,
+            enabled: true,
+        };
+        let raw = r#"{
+            "from": "0x8F5633d77Eb1D6bf6c0D357148135A91B0e1F87F",
+            "to": "0x1",
+            "amount": "100"
+        }"#;
+        let inflow = parse_bridge_event(raw, &entry, 1, 0, ts()).unwrap();
+        assert_eq!(
+            inflow.evm_source.as_deref(),
+            Some("0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f")
+        );
+    }
 }
