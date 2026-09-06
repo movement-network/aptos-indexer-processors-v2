@@ -11,7 +11,7 @@ use crate::{
         objects::v2_object_utils::ObjectAggregatedDataMapping,
         token_v2::{
             token_models::{
-                token_claims::{TokenV1Canceled, TokenV1Claimed},
+                token_claims::{TokenV1Canceled, TokenV1Claimed, TokenV1Offered},
                 token_utils::{TokenDataIdType, TokenEvent},
                 tokens::{TokenV1DepositModuleEvents, TokenV1WithdrawModuleEvents},
             },
@@ -215,6 +215,7 @@ impl TokenActivityV2 {
         tokens_canceled: &mut TokenV1Canceled,
         tokens_withdrawn: &mut TokenV1WithdrawModuleEvents,
         tokens_deposited: &mut TokenV1DepositModuleEvents,
+        tokens_offered: &mut TokenV1Offered,
     ) -> anyhow::Result<Option<Self>> {
         let event_type = event.type_str.clone();
         if let Some(token_event) = &TokenEvent::from_event(&event_type, &event.data, txn_version)? {
@@ -301,12 +302,17 @@ impl TokenActivityV2 {
                     tokens_deposited.insert(token_data_id_struct.to_id(), helper.clone());
                     helper
                 },
-                TokenEvent::OfferTokenEvent(inner) => TokenActivityHelperV1 {
-                    token_data_id_struct: inner.token_id.token_data_id.clone(),
-                    property_version: inner.token_id.property_version.clone(),
-                    from_address: Some(event_account_address.clone()),
-                    to_address: Some(inner.get_to_address()),
-                    token_amount: inner.amount.clone(),
+                TokenEvent::OfferTokenEvent(inner) => {
+                    let token_data_id_struct = inner.token_id.token_data_id.clone();
+                    let helper = TokenActivityHelperV1 {
+                        token_data_id_struct: inner.token_id.token_data_id.clone(),
+                        property_version: inner.token_id.property_version.clone(),
+                        from_address: Some(event_account_address.clone()),
+                        to_address: Some(inner.get_to_address()),
+                        token_amount: inner.amount.clone(),
+                    };
+                    tokens_offered.insert(token_data_id_struct.to_id(), helper.clone());
+                    helper
                 },
                 TokenEvent::CancelTokenOfferEvent(inner) => {
                     let token_data_id_struct = inner.token_id.token_data_id.clone();
@@ -332,12 +338,17 @@ impl TokenActivityV2 {
                     tokens_claimed.insert(token_data_id_struct.to_id(), helper.clone());
                     helper
                 },
-                TokenEvent::Offer(inner) => TokenActivityHelperV1 {
-                    token_data_id_struct: inner.token_id.token_data_id.clone(),
-                    property_version: inner.token_id.property_version.clone(),
-                    from_address: Some(inner.get_from_address()),
-                    to_address: Some(inner.get_to_address()),
-                    token_amount: inner.amount.clone(),
+                TokenEvent::Offer(inner) => {
+                    let token_data_id_struct = inner.token_id.token_data_id.clone();
+                    let helper = TokenActivityHelperV1 {
+                        token_data_id_struct: inner.token_id.token_data_id.clone(),
+                        property_version: inner.token_id.property_version.clone(),
+                        from_address: Some(inner.get_from_address()),
+                        to_address: Some(inner.get_to_address()),
+                        token_amount: inner.amount.clone(),
+                    };
+                    tokens_offered.insert(token_data_id_struct.to_id(), helper.clone());
+                    helper
                 },
                 TokenEvent::CancelOffer(inner) => {
                     let token_data_id_struct = inner.token_id.token_data_id.clone();
@@ -484,5 +495,119 @@ impl From<TokenActivityV2> for PostgresTokenActivityV2 {
             is_fungible_v2: raw_item.is_fungible_v2,
             transaction_timestamp: raw_item.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::token_v2::token_models::token_utils::TokenDataIdType;
+    use ahash::AHashMap;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::EventKey;
+    use chrono::NaiveDateTime;
+
+    fn offerer() -> String {
+        "0x00000000000000000000000000000000000000000000000000000000000000aa".to_string()
+    }
+
+    fn offer_event(type_str: &str, data: &str) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: offerer(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: type_str.to_string(),
+            data: data.to_string(),
+        }
+    }
+
+    fn offer_json(module_event: bool) -> String {
+        let token_id = serde_json::json!({
+            "token_data_id": {
+                "creator": "0x1",
+                "collection": "col",
+                "name": "tok",
+            },
+            "property_version": "0",
+        });
+        if module_event {
+            serde_json::json!({
+                "amount": "1",
+                "account": offerer(),
+                "to_address": "0xbb",
+                "token_id": token_id,
+            })
+            .to_string()
+        } else {
+            serde_json::json!({
+                "amount": "1",
+                "to_address": "0xbb",
+                "token_id": token_id,
+            })
+            .to_string()
+        }
+    }
+
+    fn expected_token_data_id() -> String {
+        let tdi: TokenDataIdType = serde_json::from_value(serde_json::json!({
+            "creator": "0x1",
+            "collection": "col",
+            "name": "tok",
+        }))
+        .unwrap();
+        tdi.to_id()
+    }
+
+    #[test]
+    fn offer_token_event_is_indexed_for_claim_owner_fallback() {
+        let mut claimed = AHashMap::new();
+        let mut canceled = AHashMap::new();
+        let mut withdrawn = AHashMap::new();
+        let mut deposited = AHashMap::new();
+        let mut offered = AHashMap::new();
+        let event = offer_event("0x3::token_transfers::TokenOfferEvent", &offer_json(false));
+        let parsed = TokenActivityV2::get_v1_from_parsed_event(
+            &event,
+            1,
+            NaiveDateTime::default(),
+            0,
+            &None,
+            &mut claimed,
+            &mut canceled,
+            &mut withdrawn,
+            &mut deposited,
+            &mut offered,
+        )
+        .unwrap();
+        assert!(parsed.is_some());
+        let helper = offered.get(&expected_token_data_id()).unwrap();
+        assert_eq!(helper.from_address.as_ref(), Some(&offerer()));
+    }
+
+    #[test]
+    fn offer_module_event_is_indexed_for_claim_owner_fallback() {
+        let mut claimed = AHashMap::new();
+        let mut canceled = AHashMap::new();
+        let mut withdrawn = AHashMap::new();
+        let mut deposited = AHashMap::new();
+        let mut offered = AHashMap::new();
+        let event = offer_event("0x3::token_transfers::Offer", &offer_json(true));
+        TokenActivityV2::get_v1_from_parsed_event(
+            &event,
+            1,
+            NaiveDateTime::default(),
+            0,
+            &None,
+            &mut claimed,
+            &mut canceled,
+            &mut withdrawn,
+            &mut deposited,
+            &mut offered,
+        )
+        .unwrap();
+        let helper = offered.get(&expected_token_data_id()).unwrap();
+        assert_eq!(helper.from_address.as_ref(), Some(&offerer()));
     }
 }

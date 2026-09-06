@@ -8,7 +8,10 @@
 use crate::{
     parquet_processors::parquet_utils::util::{HasVersion, NamedTable},
     processors::token_v2::{
-        token_models::{token_utils::TokenWriteSet, tokens::TableHandleToOwner},
+        token_models::{
+            token_utils::TokenWriteSet,
+            tokens::{TableHandleToOwner, TokenV1WithdrawModuleEvents},
+        },
         token_v2_models::v2_token_activities::TokenActivityHelperV1,
     },
     schema::current_token_pending_claims,
@@ -29,6 +32,37 @@ pub type TokenV1Claimed = AHashMap<String, TokenActivityHelperV1>;
 
 // Map to keep track of the metadata of token offers that were canceled. The key is the token data id of the offer.
 pub type TokenV1Canceled = AHashMap<String, TokenActivityHelperV1>;
+
+// Map to keep track of TokenOffer / Offer events so a later WriteTableItem can recover
+// the offerer when PendingClaims is not rewritten in the same transaction.
+pub type TokenV1Offered = AHashMap<String, TokenActivityHelperV1>;
+
+/// Resolve the offerer (`from_address`) for a pending-claim table item.
+///
+/// PendingClaims is a table inside the offerer's account. Adding another offer
+/// writes a table item but does **not** rewrite the parent resource, so
+/// `table_handle_to_owner` is empty for every offer after the first. Without a
+/// fallback the write is dropped and the processor still checkpoints.
+pub(crate) fn resolve_pending_claim_from_address(
+    table_handle: &str,
+    token_data_id: &str,
+    table_handle_to_owner: &TableHandleToOwner,
+    tokens_offered: &TokenV1Offered,
+    tokens_withdrawn: &TokenV1WithdrawModuleEvents,
+) -> Option<String> {
+    if let Some(table_metadata) = table_handle_to_owner.get(table_handle) {
+        return Some(table_metadata.get_owner_address());
+    }
+    if let Some(from) = tokens_offered
+        .get(token_data_id)
+        .and_then(|offered| offered.from_address.clone())
+    {
+        return Some(from);
+    }
+    tokens_withdrawn
+        .get(token_data_id)
+        .and_then(|withdrawn| withdrawn.from_address.clone())
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CurrentTokenPendingClaim {
@@ -72,6 +106,8 @@ impl CurrentTokenPendingClaim {
         txn_version: i64,
         txn_timestamp: chrono::NaiveDateTime,
         table_handle_to_owner: &TableHandleToOwner,
+        tokens_offered: &TokenV1Offered,
+        tokens_withdrawn: &TokenV1WithdrawModuleEvents,
     ) -> anyhow::Result<Option<Self>> {
         let table_item_data = table_item.data.as_ref().unwrap();
 
@@ -94,25 +130,34 @@ impl CurrentTokenPendingClaim {
             };
             if let Some(token) = &maybe_token {
                 let table_handle = standardize_address(&table_item.handle.to_string());
+                let token_id = offer.token_id.clone();
+                let token_data_id_struct = token_id.token_data_id;
+                let token_data_id = token_data_id_struct.to_id();
 
-                let maybe_table_metadata = table_handle_to_owner.get(&table_handle);
+                // PendingClaims is not rewritten on subsequent offers, so the
+                // in-batch table-handle map is often empty. Fall back to the
+                // offer / withdraw events from this transaction.
+                let maybe_owner_address = resolve_pending_claim_from_address(
+                    &table_handle,
+                    &token_data_id,
+                    table_handle_to_owner,
+                    tokens_offered,
+                    tokens_withdrawn,
+                );
 
-                if let Some(table_metadata) = maybe_table_metadata {
-                    let token_id = offer.token_id.clone();
-                    let token_data_id_struct = token_id.token_data_id;
+                if let Some(from_address) = maybe_owner_address {
                     let collection_data_id_hash =
                         token_data_id_struct.get_collection_data_id_hash();
                     let token_data_id_hash = token_data_id_struct.to_hash();
                     // Basically adding 0x prefix to the previous 2 lines. This is to be consistent with Token V2
                     let collection_id = token_data_id_struct.get_collection_id();
-                    let token_data_id = token_data_id_struct.to_id();
                     let collection_name = token_data_id_struct.get_collection_trunc();
                     let name = token_data_id_struct.get_name_trunc();
 
                     return Ok(Some(Self {
                         token_data_id_hash,
                         property_version: token_id.property_version,
-                        from_address: table_metadata.get_owner_address(),
+                        from_address,
                         to_address: offer.get_to_address(),
                         collection_data_id_hash,
                         creator_address: token_data_id_struct.get_creator_address(),
@@ -129,7 +174,8 @@ impl CurrentTokenPendingClaim {
                     tracing::warn!(
                         transaction_version = txn_version,
                         table_handle = table_handle,
-                        "Missing table handle metadata for TokenClaim. {:?}",
+                        token_data_id = token_data_id,
+                        "Missing table handle metadata and offer/withdraw event for TokenClaim. {:?}",
                         table_handle_to_owner
                     );
                 }
@@ -335,5 +381,101 @@ impl From<CurrentTokenPendingClaim> for PostgresCurrentTokenPendingClaim {
             token_data_id: raw_item.token_data_id,
             collection_id: raw_item.collection_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::token_v2::token_models::token_utils::TokenDataIdType;
+    use ahash::AHashMap;
+    use bigdecimal::BigDecimal;
+
+    fn token_data_id() -> TokenDataIdType {
+        serde_json::from_value(serde_json::json!({
+            "creator": "0x1",
+            "collection": "col",
+            "name": "tok",
+        }))
+        .unwrap()
+    }
+
+    fn activity(from: &str) -> TokenActivityHelperV1 {
+        TokenActivityHelperV1 {
+            token_data_id_struct: token_data_id(),
+            property_version: BigDecimal::from(0),
+            from_address: Some(from.to_string()),
+            to_address: Some(
+                "0x00000000000000000000000000000000000000000000000000000000000000bb".to_string(),
+            ),
+            token_amount: BigDecimal::from(1),
+        }
+    }
+
+    #[test]
+    fn missing_table_handle_without_events_skips() {
+        let id = token_data_id().to_id();
+        let owner = resolve_pending_claim_from_address(
+            "0xabc",
+            &id,
+            &AHashMap::new(),
+            &AHashMap::new(),
+            &AHashMap::new(),
+        );
+        assert_eq!(owner, None);
+    }
+
+    #[test]
+    fn offer_event_recovers_offerer_when_pending_claims_not_rewritten() {
+        let id = token_data_id().to_id();
+        let offerer = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+        let mut offered = AHashMap::new();
+        offered.insert(id.clone(), activity(offerer));
+
+        let owner = resolve_pending_claim_from_address(
+            "0xabc",
+            &id,
+            &AHashMap::new(),
+            &offered,
+            &AHashMap::new(),
+        );
+        assert_eq!(owner.as_deref(), Some(offerer));
+    }
+
+    #[test]
+    fn withdraw_event_recovers_offerer_when_offer_event_missing() {
+        let id = token_data_id().to_id();
+        let offerer = "0x00000000000000000000000000000000000000000000000000000000000000cc";
+        let mut withdrawn = AHashMap::new();
+        withdrawn.insert(id.clone(), activity(offerer));
+
+        let owner = resolve_pending_claim_from_address(
+            "0xabc",
+            &id,
+            &AHashMap::new(),
+            &AHashMap::new(),
+            &withdrawn,
+        );
+        assert_eq!(owner.as_deref(), Some(offerer));
+    }
+
+    #[test]
+    fn offer_event_is_preferred_over_withdraw() {
+        let id = token_data_id().to_id();
+        let offerer = "0x00000000000000000000000000000000000000000000000000000000000000dd";
+        let other = "0x00000000000000000000000000000000000000000000000000000000000000ee";
+        let mut offered = AHashMap::new();
+        offered.insert(id.clone(), activity(offerer));
+        let mut withdrawn = AHashMap::new();
+        withdrawn.insert(id.clone(), activity(other));
+
+        let owner = resolve_pending_claim_from_address(
+            "0xabc",
+            &id,
+            &AHashMap::new(),
+            &offered,
+            &withdrawn,
+        );
+        assert_eq!(owner.as_deref(), Some(offerer));
     }
 }
