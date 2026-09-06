@@ -317,7 +317,13 @@ impl TokenActivityV2 {
                         to_address: Some(inner.get_to_address()),
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_canceled.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_canceled.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            helper.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
                 TokenEvent::ClaimTokenEvent(inner) => {
@@ -329,7 +335,13 @@ impl TokenActivityV2 {
                         to_address: Some(inner.get_to_address()),
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_claimed.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_claimed.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            helper.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
                 TokenEvent::Offer(inner) => TokenActivityHelperV1 {
@@ -348,7 +360,13 @@ impl TokenActivityV2 {
                         to_address: Some(inner.get_to_address()),
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_canceled.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_canceled.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            helper.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
                 TokenEvent::Claim(inner) => {
@@ -360,7 +378,13 @@ impl TokenActivityV2 {
                         to_address: Some(inner.get_to_address()),
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_claimed.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_claimed.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            helper.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
             };
