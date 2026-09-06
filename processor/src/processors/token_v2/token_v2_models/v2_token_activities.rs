@@ -84,13 +84,16 @@ impl TokenActivityV2 {
         {
             let event_account_address =
                 standardize_address(&event.key.as_ref().unwrap().account_address);
-            // burn and mint events are attached to the collection. The rest should be attached to the token
+            // burn and mint events are attached to the collection. The rest should be attached to the token.
+            // Module events (0x4::token::Mutation) are emitted at 0x0, so token_data_id
+            // must come from the event payload rather than the event account.
             let token_data_id = match token_event {
                 V2TokenEvent::MintEvent(inner) => inner.get_token_address(),
                 V2TokenEvent::Mint(inner) => inner.get_token_address(),
                 V2TokenEvent::BurnEvent(inner) => inner.get_token_address(),
                 V2TokenEvent::Burn(inner) => inner.get_token_address(),
                 V2TokenEvent::TransferEvent(inner) => inner.get_object_address(),
+                V2TokenEvent::TokenMutation(inner) => inner.get_token_address(),
                 _ => event_account_address.clone(),
             };
 
@@ -484,5 +487,127 @@ impl From<TokenActivityV2> for PostgresTokenActivityV2 {
             is_fungible_v2: raw_item.is_fungible_v2,
             transaction_timestamp: raw_item.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::EventKey;
+    use chrono::DateTime;
+
+    #[tokio::test]
+    async fn token_mutation_module_event_uses_payload_token_address() {
+        // Module events are emitted at 0x0. Using that as token_data_id drops the
+        // mutation onto a nonexistent token and takes the burn-fallback path.
+        let event_account = "0x0";
+        let token_address_raw = "0xaa";
+        let token_data_id = standardize_address(token_address_raw);
+        let sender = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        let event = Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: event_account.to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: "0x4::token::Mutation".to_string(),
+            data: serde_json::json!({
+                "token_address": token_address_raw,
+                "mutated_field_name": "uri",
+                "old_value": "old",
+                "new_value": "new",
+            })
+            .to_string(),
+        };
+
+        let mut metadata = ObjectAggregatedDataMapping::new();
+        metadata.insert(token_data_id.clone(), ObjectAggregatedData::default());
+
+        let ts = DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc();
+
+        let activity = TokenActivityV2::get_nft_v2_from_parsed_event(
+            &event, 1, ts, 0, &None, &metadata, sender,
+        )
+        .await
+        .unwrap()
+        .expect("module Mutation event should produce an activity row");
+
+        assert_eq!(activity.token_data_id, token_data_id);
+        assert_ne!(
+            activity.token_data_id,
+            standardize_address(event_account),
+            "token_data_id must not be the module-event account (0x0)"
+        );
+        // Metadata lookup keyed by the real token must succeed so we keep
+        // mutation fields instead of the burn-fallback (amount=1, no values).
+        assert_eq!(activity.token_amount, BigDecimal::zero());
+        assert_eq!(activity.before_value.as_deref(), Some("old"));
+        assert_eq!(activity.after_value.as_deref(), Some("new"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::EventKey;
+    use chrono::DateTime;
+
+    #[tokio::test]
+    async fn token_mutation_module_event_uses_payload_token_address() {
+        // Module events are emitted at 0x0. Using that as token_data_id drops the
+        // mutation onto a nonexistent token and takes the burn-fallback path.
+        let event_account = "0x0";
+        let token_address_raw = "0xaa";
+        let token_data_id = standardize_address(token_address_raw);
+        let sender = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        let event = Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: event_account.to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: "0x4::token::Mutation".to_string(),
+            data: serde_json::json!({
+                "token_address": token_address_raw,
+                "mutated_field_name": "uri",
+                "old_value": "old",
+                "new_value": "new",
+            })
+            .to_string(),
+        };
+
+        let mut metadata = ObjectAggregatedDataMapping::new();
+        metadata.insert(token_data_id.clone(), ObjectAggregatedData::default());
+
+        let ts = DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc();
+
+        let activity = TokenActivityV2::get_nft_v2_from_parsed_event(
+            &event, 1, ts, 0, &None, &metadata, sender,
+        )
+        .await
+        .unwrap()
+        .expect("module Mutation event should produce an activity row");
+
+        assert_eq!(activity.token_data_id, token_data_id);
+        assert_ne!(
+            activity.token_data_id,
+            standardize_address(event_account),
+            "token_data_id must not be the module-event account (0x0)"
+        );
+        // Metadata lookup keyed by the real token must succeed so we keep
+        // mutation fields instead of the burn-fallback (amount=1, no values).
+        assert_eq!(activity.token_amount, BigDecimal::zero());
+        assert_eq!(activity.before_value.as_deref(), Some("old"));
+        assert_eq!(activity.after_value.as_deref(), Some("new"));
     }
 }

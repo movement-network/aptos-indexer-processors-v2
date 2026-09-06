@@ -265,6 +265,12 @@ pub struct TokenMutationEventV2 {
     pub new_value: String,
 }
 
+impl TokenMutationEventV2 {
+    pub fn get_token_address(&self) -> String {
+        standardize_address(&self.token_address)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BurnEvent {
     #[serde(deserialize_with = "deserialize_from_string")]
