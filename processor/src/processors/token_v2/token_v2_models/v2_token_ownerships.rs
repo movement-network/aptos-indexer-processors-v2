@@ -492,7 +492,10 @@ impl TokenOwnershipV2 {
                 // If table_handle_to_owner doesn’t have the table metadata, it might be because
                 // that module events were emitted, which means the resource won’t appear in the transaction.
                 // Try getting the token metadata from the deposit module event instead.
-                let maybe_token_metadata = tokens_deposited.get(&token_data_id);
+                let maybe_token_metadata = tokens_deposited.get(&(
+                    token_data_id.clone(),
+                    token_id_struct.property_version.clone(),
+                ));
                 let owner_address = if let Some(token_metadata) = maybe_token_metadata {
                     token_metadata.to_address.clone().unwrap()
                 } else {
@@ -572,7 +575,10 @@ impl TokenOwnershipV2 {
                 let owner_address = tm.get_owner_address();
                 (owner_address, Some(tm.table_type.clone()))
             } else {
-                let maybe_token_metadata = tokens_withdrawn.get(&token_data_id);
+                let maybe_token_metadata = tokens_withdrawn.get(&(
+                    token_data_id.clone(),
+                    token_id_struct.property_version.clone(),
+                ));
                 let owner_address = if let Some(token_metadata) = maybe_token_metadata {
                     token_metadata.from_address.clone().unwrap()
                 } else {
@@ -833,5 +839,207 @@ impl From<CurrentTokenOwnershipV2> for PostgresCurrentTokenOwnershipV2 {
             last_transaction_timestamp: raw_item.last_transaction_timestamp,
             non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::token_v2::{
+        token_models::token_claims::{TokenV1Canceled, TokenV1Claimed},
+        token_v2_models::v2_token_activities::TokenActivityV2,
+    };
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        delete_table_item, write_table_item, DeleteTableItem, Event, EventKey, WriteTableItem,
+    };
+
+    const CREATOR: &str = "0x1";
+    const COLLECTION: &str = "C";
+    const NAME: &str = "T";
+    const ALICE: &str = "0xa11ce";
+    const BOB: &str = "0xb0b";
+
+    fn ts() -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::default()
+    }
+
+    fn token_id_json(property_version: &str) -> String {
+        format!(
+            r#"{{"token_data_id":{{"creator":"{CREATOR}","collection":"{COLLECTION}","name":"{NAME}"}},"property_version":"{property_version}"}}"#
+        )
+    }
+
+    fn token_deposit_event(account: &str, property_version: &str) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: "0x0".to_string(),
+            }),
+            sequence_number: 0,
+            type_str: "0x3::token::TokenDeposit".to_string(),
+            data: format!(
+                r#"{{"account":"{account}","amount":"1","id":{}}}"#,
+                token_id_json(property_version)
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn token_withdraw_event(account: &str, property_version: &str) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: "0x0".to_string(),
+            }),
+            sequence_number: 0,
+            type_str: "0x3::token::TokenWithdraw".to_string(),
+            data: format!(
+                r#"{{"account":"{account}","amount":"1","id":{}}}"#,
+                token_id_json(property_version)
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn write_token_table_item(handle: &str, property_version: &str) -> WriteTableItem {
+        let token_json = format!(
+            r#"{{"amount":"1","id":{},"token_properties":"0x00"}}"#,
+            token_id_json(property_version)
+        );
+        WriteTableItem {
+            handle: handle.to_string(),
+            key: token_id_json(property_version),
+            data: Some(write_table_item::Data {
+                key: token_id_json(property_version),
+                key_type: "0x3::token::TokenId".to_string(),
+                value: token_json,
+                value_type: "0x3::token::Token".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn delete_token_table_item(handle: &str, property_version: &str) -> DeleteTableItem {
+        DeleteTableItem {
+            handle: handle.to_string(),
+            key: token_id_json(property_version),
+            data: Some(delete_table_item::Data {
+                key: token_id_json(property_version),
+                key_type: "0x3::token::TokenId".to_string(),
+                value: String::new(),
+                value_type: String::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ingest_v1_events(
+        events: &[Event],
+    ) -> (TokenV1DepositModuleEvents, TokenV1WithdrawModuleEvents) {
+        let mut tokens_claimed: TokenV1Claimed = AHashMap::new();
+        let mut tokens_canceled: TokenV1Canceled = AHashMap::new();
+        let mut tokens_withdrawn = AHashMap::new();
+        let mut tokens_deposited = AHashMap::new();
+        for (i, event) in events.iter().enumerate() {
+            TokenActivityV2::get_v1_from_parsed_event(
+                event,
+                1,
+                ts(),
+                i as i64,
+                &None,
+                &mut tokens_claimed,
+                &mut tokens_canceled,
+                &mut tokens_withdrawn,
+                &mut tokens_deposited,
+            )
+            .unwrap();
+        }
+        (tokens_deposited, tokens_withdrawn)
+    }
+
+    #[test]
+    fn deposit_fallback_does_not_reuse_owner_across_property_versions() {
+        let (tokens_deposited, _) = ingest_v1_events(&[
+            token_deposit_event(ALICE, "0"),
+            token_deposit_event(BOB, "1"),
+        ]);
+        let empty_owners = AHashMap::new();
+
+        let alice_row = TokenOwnershipV2::get_v1_from_write_table_item(
+            &write_token_table_item("0xaaa", "0"),
+            1,
+            0,
+            ts(),
+            &empty_owners,
+            &tokens_deposited,
+        )
+        .unwrap()
+        .expect("pv0 deposit fallback")
+        .1
+        .expect("current ownership");
+        let bob_row = TokenOwnershipV2::get_v1_from_write_table_item(
+            &write_token_table_item("0xbbb", "1"),
+            1,
+            1,
+            ts(),
+            &empty_owners,
+            &tokens_deposited,
+        )
+        .unwrap()
+        .expect("pv1 deposit fallback")
+        .1
+        .expect("current ownership");
+
+        assert_eq!(
+            alice_row.owner_address,
+            standardize_address(ALICE),
+            "pv0 must keep Alice, not the later Bob deposit"
+        );
+        assert_eq!(bob_row.owner_address, standardize_address(BOB));
+        assert_eq!(alice_row.property_version_v1, BigDecimal::from(0));
+        assert_eq!(bob_row.property_version_v1, BigDecimal::from(1));
+    }
+
+    #[test]
+    fn withdraw_fallback_does_not_reuse_owner_across_property_versions() {
+        let (_, tokens_withdrawn) = ingest_v1_events(&[
+            token_withdraw_event(ALICE, "0"),
+            token_withdraw_event(BOB, "1"),
+        ]);
+        let empty_owners = AHashMap::new();
+
+        let alice_row = TokenOwnershipV2::get_v1_from_delete_table_item(
+            &delete_token_table_item("0xaaa", "0"),
+            1,
+            0,
+            ts(),
+            &empty_owners,
+            &tokens_withdrawn,
+        )
+        .unwrap()
+        .expect("pv0 withdraw fallback")
+        .1
+        .expect("current ownership");
+        let bob_row = TokenOwnershipV2::get_v1_from_delete_table_item(
+            &delete_token_table_item("0xbbb", "1"),
+            1,
+            1,
+            ts(),
+            &empty_owners,
+            &tokens_withdrawn,
+        )
+        .unwrap()
+        .expect("pv1 withdraw fallback")
+        .1
+        .expect("current ownership");
+
+        assert_eq!(
+            alice_row.owner_address,
+            standardize_address(ALICE),
+            "pv0 must keep Alice, not the later Bob withdraw"
+        );
+        assert_eq!(bob_row.owner_address, standardize_address(BOB));
+        assert_eq!(alice_row.amount, BigDecimal::zero());
+        assert_eq!(bob_row.amount, BigDecimal::zero());
     }
 }

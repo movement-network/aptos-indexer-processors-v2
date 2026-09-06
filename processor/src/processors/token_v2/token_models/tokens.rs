@@ -39,8 +39,11 @@ pub type CurrentTokenPendingClaimPK = (TokenDataIdHash, BigDecimal, Address, Add
 // PK of tokens table, used to dedupe tokens
 pub type TokenPK = (TokenDataIdHash, BigDecimal);
 // Map to keep track of token withdraw and deposit module events for token v1.
-pub type TokenV1WithdrawModuleEvents = AHashMap<TokenDataIdHash, TokenActivityHelperV1>;
-pub type TokenV1DepositModuleEvents = AHashMap<TokenDataIdHash, TokenActivityHelperV1>;
+// Keyed by (token_data_id, property_version) so two PVs of the same named token
+// in one txn do not share an owner fallback (TokenStore not rewritten).
+pub type TokenV1ModuleEventPK = (TokenDataIdHash, BigDecimal);
+pub type TokenV1WithdrawModuleEvents = AHashMap<TokenV1ModuleEventPK, TokenActivityHelperV1>;
+pub type TokenV1DepositModuleEvents = AHashMap<TokenV1ModuleEventPK, TokenActivityHelperV1>;
 
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize)]
 #[diesel(primary_key(token_data_id_hash, property_version, transaction_version))]
