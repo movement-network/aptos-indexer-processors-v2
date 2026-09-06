@@ -160,9 +160,8 @@ impl Processable for AddressReputationExtractor {
                             if inflow.evm_source.is_none() {
                                 inflow.evm_source = decode_payload_evm_source(txn, kind);
                             }
-                            inflow.evm_source = inflow
-                                .evm_source
-                                .map(|s| standardize_evm_address(&s));
+                            inflow.evm_source =
+                                inflow.evm_source.map(|s| standardize_evm_address(&s));
                             if inflow.lz_guid.is_none() {
                                 inflow.lz_guid = extract_payload_guid(txn, kind);
                             }
@@ -498,7 +497,9 @@ mod tests {
     use chrono::DateTime;
 
     fn ts() -> chrono::NaiveDateTime {
-        DateTime::from_timestamp(1_700_000_000, 0).unwrap().naive_utc()
+        DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc()
     }
 
     #[test]

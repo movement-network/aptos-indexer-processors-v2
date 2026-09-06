@@ -183,7 +183,10 @@ async fn handle_evms(State(state): State<AppState>, Json(addrs): Json<Vec<String
     }
 
     // Match processor writes: risk-score PK is case-sensitive.
-    let addrs: Vec<String> = addrs.into_iter().map(|a| standardize_evm_address(&a)).collect();
+    let addrs: Vec<String> = addrs
+        .into_iter()
+        .map(|a| standardize_evm_address(&a))
+        .collect();
     let input_count = addrs.len();
     match db::query_evms(&state.pool, addrs).await {
         Ok(rows) => {
