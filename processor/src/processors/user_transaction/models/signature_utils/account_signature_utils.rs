@@ -210,9 +210,10 @@ pub fn get_public_key_indices_from_multi_key_signature(s: &MultiKeySignature) ->
     s.signatures.iter().map(|key| key.index as usize).collect()
 }
 
+/// Parameter order matches the other `parse_*` helpers: type string, then sender.
 pub fn parse_abstraction_signature(
-    sender: &String,
     account_signature_type: &str,
+    sender: &String,
     transaction_version: i64,
     transaction_block_height: i64,
     is_sender_primary: bool,
@@ -236,5 +237,71 @@ pub fn parse_abstraction_signature(
         signature: "Not implemented".into(),
         multi_agent_index,
         multi_sig_index: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::AbstractSignature;
+    use chrono::DateTime;
+
+    fn abstraction_account_signature() -> AccountSignature {
+        AccountSignature {
+            r#type: AccountSignatureTypeEnum::Abstraction as i32,
+            signature: Some(AccountSignatureEnum::Abstraction(AbstractSignature {
+                function_info: "0x1::account_abstraction::authenticate".to_string(),
+                signature: vec![0x11, 0x22],
+            })),
+        }
+    }
+
+    #[test]
+    fn from_account_signature_abstraction_keeps_signer_and_type() {
+        let sender = "0xabc".to_string();
+        let parsed = from_account_signature(
+            &abstraction_account_signature(),
+            &sender,
+            99,
+            3,
+            true,
+            0,
+            None,
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].signer,
+            "0x0000000000000000000000000000000000000000000000000000000000000abc"
+        );
+        assert_eq!(parsed[0].account_signature_type, "abstraction_signature");
+        assert!(parsed[0].is_sender_primary);
+        assert_eq!(parsed[0].transaction_version, 99);
+    }
+
+    #[test]
+    fn from_account_signature_abstraction_honors_override_address() {
+        let sender = "0x1".to_string();
+        let fee_payer = "0xdef".to_string();
+        let parsed = from_account_signature(
+            &abstraction_account_signature(),
+            &sender,
+            1,
+            1,
+            false,
+            2,
+            Some(&fee_payer),
+            DateTime::from_timestamp(1, 0).unwrap().naive_utc(),
+        );
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].signer,
+            "0x0000000000000000000000000000000000000000000000000000000000000def"
+        );
+        assert_eq!(parsed[0].account_signature_type, "abstraction_signature");
+        assert!(!parsed[0].is_sender_primary);
+        assert_eq!(parsed[0].multi_agent_index, 2);
     }
 }
