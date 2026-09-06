@@ -237,6 +237,8 @@ impl Processable for AddressReputationExtractor {
                     let bridge_match = txn_inflows
                         .iter()
                         .find(|bi| bi.aptos_recipient == d.address && bi.amount == d.amount);
+                    // Flag so the storer skips hop propagation. evm_fund is
+                    // seeded only from the synthetic head (inflow event_index).
                     let (is_bridge_inflow, bridge_name) = match bridge_match {
                         Some(bi) => (true, Some(bi.bridge_name.clone())),
                         None => (false, None),

@@ -50,6 +50,9 @@ const USDCX_METADATA: &str = "0x989577931ff5ec0575071a8bc9084c1c010981169e08cc29
 // the extractor doesn't cross-check the payload's recipient against the event.
 const INTENT_PAYLOAD_HEX: &str = "0x5a2e0acd000000010000000000000000000000000000000000000000000000000000000005f5e1000000271563f169ba69623ba6ccf34620857644feb46d0f87e1d7bbcf8c071d30c3d94bd607979ccb27c9d3167afc5cb70be06f6b6efc69057b8790708018906e1c9cb3020000000000000000000000001c7d4b196cb0c7b01d743fbc6116a902379c72380000000000000000000000008f5633d77eb1d6bf6c0d357148135a91b0e1f87f000000000000000000000000000000000000000000000000000000000000000023a15209170f589991f969f27f59c2e3f4f21c01bd7ceb8d6e0ad8f6c372fdc300000000";
 const INTENT_LOCAL_DEPOSITOR: &str = "0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f";
+// Escrow store/owner used by the adapter-style (Withdraw+Deposit) fixture.
+const ESCROW_OWNER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const ESCROW_STORE: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 // Transfer txn 163802127
 const SENDER_OWNER: &str = "0xbb45ce1d3dfd1b8520c637e8968f9333022ec35d43cd5a03c053af98c0d2914f";
@@ -185,6 +188,25 @@ fn mint_request() -> UserTransactionRequest {
         }),
         ..Default::default()
     }
+}
+
+/// Same mint as `make_mint_txn`, plus an escrow Withdraw of the minted amount.
+/// Mirrors LayerZero OFT Adapter `primary_fungible_store::transfer` credit.
+fn make_adapter_style_receive_txn() -> Transaction {
+    let mut txn = make_mint_txn();
+    let withdraw_data = format!(r#"{{"store":"{ESCROW_STORE}","amount":"{MINT_AMOUNT}"}}"#);
+    if let Some(TxnData::User(user)) = txn.txn_data.as_mut() {
+        user.events.insert(
+            0,
+            fa_event("0x1::fungible_asset::Withdraw", withdraw_data),
+        );
+    }
+    if let Some(info) = txn.info.as_mut() {
+        info.changes.push(object_core_write(ESCROW_STORE, ESCROW_OWNER));
+        info.changes
+            .push(fungible_store_write(ESCROW_STORE, USDCX_METADATA));
+    }
+    txn
 }
 
 fn make_transfer_txn() -> Transaction {
@@ -331,5 +353,64 @@ async fn extractor_emits_bridge_head_and_owner_keyed_transfer() {
         user_edge.asset_type.as_deref(),
         Some(TRANSFER_ASSET),
         "user transfer edge must carry the FA metadata address from FungibleStore"
+    );
+}
+
+/// LayerZero OFT Adapter (and any lock/unlock credit) emits FA Withdraw from
+/// escrow plus FA Deposit to the recipient, alongside the registered bridge
+/// event. The extractor must keep both the paired W→D edge (so it is not
+/// treated as a user hop) and the synthetic module→recipient head.
+#[tokio::test]
+async fn extractor_emits_paired_and_synthetic_bridge_edges() {
+    let (evm_tx, _evm_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut extractor = AddressReputationExtractor::new(registry(), evm_tx);
+    let input = TransactionContext {
+        data: vec![make_adapter_style_receive_txn()],
+        metadata: Default::default(),
+    };
+
+    let out = extractor
+        .process(input)
+        .await
+        .expect("extractor errored")
+        .expect("no output");
+    let (edges, inflows) = out.data;
+
+    assert_eq!(inflows.len(), 1);
+    assert_eq!(inflows[0].event_index, 2);
+    assert_eq!(inflows[0].aptos_recipient, MINT_RECIPIENT_OWNER);
+    assert_eq!(inflows[0].evm_source.as_deref(), Some(INTENT_LOCAL_DEPOSITOR));
+
+    let bridge_edges: Vec<_> = edges.iter().filter(|e| e.is_bridge_inflow).collect();
+    assert_eq!(
+        bridge_edges.len(),
+        2,
+        "expected paired Withdraw+Deposit edge plus synthetic head, got {edges:?}"
+    );
+
+    let paired = bridge_edges
+        .iter()
+        .find(|e| e.event_index == 0)
+        .expect("missing paired W→D bridge edge");
+    assert_eq!(paired.from_address, ESCROW_OWNER);
+    assert_eq!(paired.to_address, MINT_RECIPIENT_OWNER);
+    assert_eq!(paired.amount.to_string(), MINT_AMOUNT);
+
+    let synthetic = bridge_edges
+        .iter()
+        .find(|e| e.event_index == 2)
+        .expect("missing synthetic bridge head");
+    assert_eq!(synthetic.from_address, USDCX_MODULE);
+    assert_eq!(synthetic.to_address, MINT_RECIPIENT_OWNER);
+    assert_eq!(synthetic.amount.to_string(), MINT_AMOUNT);
+
+    use processor::processors::address_reputation::address_reputation_storer::inflow_for_bridge_seed;
+    assert!(
+        inflow_for_bridge_seed(paired, &inflows).is_none(),
+        "paired W→D must not seed evm_fund"
+    );
+    assert!(
+        inflow_for_bridge_seed(synthetic, &inflows).is_some(),
+        "synthetic head must seed evm_fund once"
     );
 }
