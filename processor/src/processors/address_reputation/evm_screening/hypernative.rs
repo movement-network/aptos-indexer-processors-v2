@@ -323,8 +323,8 @@ impl HypernativeClient {
             },
         };
 
-        // Parse all entries before caching: if any entry is malformed we return
-        // Err without caching so the addresses remain retryable.
+        // Parse all entries before returning: if any entry is malformed we
+        // return Err so the addresses remain retryable (still uncached).
         let mut new_results = Vec::with_capacity(data.len());
         for entry in data {
             let get_str = |key: &str| entry.get(key).and_then(|v| v.as_str()).map(str::to_owned);
