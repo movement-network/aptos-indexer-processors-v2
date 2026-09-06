@@ -850,7 +850,7 @@ mod tests {
         token_v2_models::v2_token_activities::TokenActivityV2,
     };
     use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
-        delete_table_item, write_table_item, DeleteTableItem, Event, EventKey, WriteTableItem,
+        DeleteTableData, DeleteTableItem, Event, EventKey, WriteTableData, WriteTableItem,
     };
 
     const CREATOR: &str = "0x1";
@@ -909,7 +909,7 @@ mod tests {
         WriteTableItem {
             handle: handle.to_string(),
             key: token_id_json(property_version),
-            data: Some(write_table_item::Data {
+            data: Some(WriteTableData {
                 key: token_id_json(property_version),
                 key_type: "0x3::token::TokenId".to_string(),
                 value: token_json,
@@ -923,11 +923,9 @@ mod tests {
         DeleteTableItem {
             handle: handle.to_string(),
             key: token_id_json(property_version),
-            data: Some(delete_table_item::Data {
+            data: Some(DeleteTableData {
                 key: token_id_json(property_version),
                 key_type: "0x3::token::TokenId".to_string(),
-                value: String::new(),
-                value_type: String::new(),
             }),
             ..Default::default()
         }
