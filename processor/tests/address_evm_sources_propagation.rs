@@ -388,3 +388,83 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
         && r.evm_fund == BigDecimal::from(100)
         && r.transfer_fund == BigDecimal::from(0)));
 }
+
+/// Default processor_mode resumes at `last_success_version` (inclusive), and
+/// crash recovery replays from the last persisted checkpoint. Re-processing
+/// the same batch must not add `evm_fund` / `transfer_fund` a second time.
+#[tokio::test]
+async fn replay_of_same_batch_does_not_double_count_funds() {
+    let (_db, pool) = spin_up().await;
+    let (guid_tx, _guid_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut storer = AddressReputationStorer::new(pool.clone(), config(), guid_tx);
+
+    let amounts = vec![100u64];
+    let (edges, inflows) = seed_bridge_batch(A_ADDR, 1, 1000, &amounts);
+    storer
+        .process(TransactionContext {
+            data: (edges.clone(), inflows.clone()),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("first seed")
+        .expect("first seed output");
+
+    let a_after_first = read_rows(&pool, A_ADDR).await;
+    assert_eq!(a_after_first.len(), 1);
+    assert_eq!(a_after_first[0].evm_fund, BigDecimal::from(100));
+    assert_eq!(a_after_first[0].transfer_fund, BigDecimal::from(0));
+
+    // Inclusive resume of the last committed version.
+    storer
+        .process(TransactionContext {
+            data: (edges, inflows),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("replay seed")
+        .expect("replay seed output");
+
+    let a_after_replay = read_rows(&pool, A_ADDR).await;
+    assert_eq!(a_after_replay.len(), 1);
+    assert_eq!(
+        a_after_replay[0].evm_fund,
+        BigDecimal::from(100),
+        "replaying a committed bridge inflow must not add evm_fund again"
+    );
+
+    let transfer_edge = transfer(A_ADDR, B_ADDR, 40, 2000, 0);
+    storer
+        .process(TransactionContext {
+            data: (vec![transfer_edge.clone()], vec![]),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("first transfer")
+        .expect("first transfer output");
+
+    let b_after_first = read_rows(&pool, B_ADDR).await;
+    assert_eq!(b_after_first.len(), 1);
+    assert_eq!(b_after_first[0].transfer_fund, BigDecimal::from(40));
+
+    storer
+        .process(TransactionContext {
+            data: (vec![transfer_edge], vec![]),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("replay transfer")
+        .expect("replay transfer output");
+
+    let b_after_replay = read_rows(&pool, B_ADDR).await;
+    assert_eq!(b_after_replay.len(), 1);
+    assert_eq!(
+        b_after_replay[0].transfer_fund,
+        BigDecimal::from(40),
+        "replaying a committed transfer must not add transfer_fund again"
+    );
+    assert_eq!(
+        b_after_replay[0].evm_fund,
+        BigDecimal::from(0),
+        "replay must not invent a direct bridge inflow"
+    );
+}
