@@ -153,7 +153,7 @@ impl CurrentDelegatorBalance {
         write_set_change_index: i64,
         inactive_pool_to_staking_pool: &ShareToStakingPoolMapping,
         inactive_share_to_pool: &ShareToPoolMapping,
-        conn: &mut DbPoolConnection<'_>,
+        conn: Option<&mut DbPoolConnection<'_>>,
         query_retries: u32,
         query_retry_delay_ms: u64,
         block_timestamp: chrono::NaiveDateTime,
@@ -170,6 +170,14 @@ impl CurrentDelegatorBalance {
             {
                 Some(pool_address) => pool_address,
                 None => {
+                    let Some(conn) = conn else {
+                        tracing::debug!(
+                            transaction_version = txn_version,
+                            lookup_key = &inactive_pool_handle,
+                            "Skipping inactive-share pool lookup without a DB connection",
+                        );
+                        return Ok(None);
+                    };
                     match Self::get_staking_pool_from_inactive_share_handle(
                         conn,
                         &inactive_pool_handle,
@@ -292,7 +300,7 @@ impl CurrentDelegatorBalance {
         write_set_change_index: i64,
         inactive_pool_to_staking_pool: &ShareToStakingPoolMapping,
         inactive_share_to_pool: &ShareToPoolMapping,
-        conn: &mut DbPoolConnection<'_>,
+        conn: Option<&mut DbPoolConnection<'_>>,
         query_retries: u32,
         query_retry_delay_ms: u64,
         block_timestamp: chrono::NaiveDateTime,
@@ -308,16 +316,26 @@ impl CurrentDelegatorBalance {
                 .map(|metadata| metadata.staking_pool_address.clone())
             {
                 Some(pool_address) => pool_address,
-                None => Self::get_staking_pool_from_inactive_share_handle(
-                    conn,
-                    &inactive_pool_handle,
-                    query_retries,
-                    query_retry_delay_ms,
-                )
-                .await
-                .context(format!(
-                    "Failed to get staking pool from inactive share handle {inactive_pool_handle}, txn version {txn_version}"
-                ))?,
+                None => {
+                    let Some(conn) = conn else {
+                        tracing::debug!(
+                            transaction_version = txn_version,
+                            lookup_key = &inactive_pool_handle,
+                            "Skipping inactive-share pool lookup without a DB connection",
+                        );
+                        return Ok(None);
+                    };
+                    Self::get_staking_pool_from_inactive_share_handle(
+                        conn,
+                        &inactive_pool_handle,
+                        query_retries,
+                        query_retry_delay_ms,
+                    )
+                    .await
+                    .context(format!(
+                        "Failed to get staking pool from inactive share handle {inactive_pool_handle}, txn version {txn_version}"
+                    ))?
+                },
             };
             let delegator_address = standardize_address(&delete_table_item.key.to_string());
 
@@ -438,7 +456,7 @@ impl CurrentDelegatorBalance {
     pub async fn from_transaction(
         transaction: &Transaction,
         active_pool_to_staking_pool: &ShareToStakingPoolMapping,
-        conn: &mut DbPoolConnection<'_>,
+        mut conn: Option<&mut DbPoolConnection<'_>>,
         query_retries: u32,
         query_retry_delay_ms: u64,
     ) -> anyhow::Result<(Vec<DelegatorBalance>, CurrentDelegatorBalanceMap)> {
@@ -495,7 +513,7 @@ impl CurrentDelegatorBalance {
                             index as i64,
                             &inactive_pool_to_staking_pool,
                             &inactive_share_to_pool,
-                            conn,
+                            conn.as_deref_mut(),
                             query_retries,
                             query_retry_delay_ms,
                             txn_timestamp,
@@ -524,7 +542,7 @@ impl CurrentDelegatorBalance {
                             index as i64,
                             &inactive_pool_to_staking_pool,
                             &inactive_share_to_pool,
-                            conn,
+                            conn.as_deref_mut(),
                             query_retries,
                             query_retry_delay_ms,
                             txn_timestamp,

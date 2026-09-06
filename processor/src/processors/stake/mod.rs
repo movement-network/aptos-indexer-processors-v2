@@ -115,21 +115,25 @@ pub async fn parse_stake_data(
             }
         }
 
-        if let Some(ref mut conn) = conn {
-            // Add delegator balances
-            let (mut delegator_balances, current_delegator_balances) =
-                CurrentDelegatorBalance::from_transaction(
-                    txn,
-                    &active_pool_to_staking_pool,
-                    conn,
-                    query_retries,
-                    query_retry_delay_ms,
-                )
-                .await
-                .unwrap();
-            all_delegator_balances.append(&mut delegator_balances);
-            all_current_delegator_balances.extend(current_delegator_balances);
+        // Delegator balances: active shares (and inactive shares with in-batch
+        // mappings) do not need a DB connection. Only inactive-share fallback
+        // lookups use `conn`. ParquetStakeExtractor calls this with None, so
+        // gating the whole block on Some(conn) would emit empty parquet tables
+        // while still advancing the checkpoint.
+        let (mut delegator_balances, current_delegator_balances) =
+            CurrentDelegatorBalance::from_transaction(
+                txn,
+                &active_pool_to_staking_pool,
+                conn.as_mut(),
+                query_retries,
+                query_retry_delay_ms,
+            )
+            .await
+            .unwrap();
+        all_delegator_balances.append(&mut delegator_balances);
+        all_current_delegator_balances.extend(current_delegator_balances);
 
+        if let Some(ref mut conn) = conn {
             // this write table item indexing is to get delegator address, table handle, and voter & pending voter
             for wsc in &transaction_info.changes {
                 if let Change::WriteTableItem(write_table_item) = wsc.change.as_ref().unwrap() {
@@ -217,4 +221,165 @@ pub async fn parse_stake_data(
         all_current_delegator_pool_balances,
         all_current_delegated_voter,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_stake_data;
+    use aptos_indexer_processor_sdk::aptos_protos::{
+        transaction::v1::{
+            transaction::TxnData, write_set_change::Change, MoveStructTag, Transaction,
+            TransactionInfo, UserTransaction, WriteResource, WriteSetChange, WriteTableData,
+            WriteTableItem,
+        },
+        util::timestamp::Timestamp,
+    };
+
+    const POOL_ADDRESS: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const DELEGATOR_ADDRESS: &str =
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const ACTIVE_SHARE_HANDLE: &str =
+        "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const INACTIVE_PARENT_HANDLE: &str =
+        "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const INACTIVE_SHARE_HANDLE: &str =
+        "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    fn delegation_pool_write(active_handle: &str, inactive_handle: &str) -> WriteSetChange {
+        let data = format!(
+            r#"{{"active_shares":{{"shares":{{"inner":{{"handle":"{active_handle}"}}}},"total_coins":"1000","total_shares":"1000","scaling_factor":"1"}},"inactive_shares":{{"handle":"{inactive_handle}"}},"operator_commission_percentage":"0"}}"#
+        );
+        WriteSetChange {
+            r#type: 0,
+            change: Some(Change::WriteResource(WriteResource {
+                address: POOL_ADDRESS.to_string(),
+                state_key_hash: vec![],
+                r#type: Some(MoveStructTag {
+                    address: "0x1".to_string(),
+                    module: "delegation_pool".to_string(),
+                    name: "DelegationPool".to_string(),
+                    generic_type_params: vec![],
+                }),
+                type_str: "0x1::delegation_pool::DelegationPool".to_string(),
+                data,
+            })),
+        }
+    }
+
+    fn share_write(handle: &str, shares: &str) -> WriteSetChange {
+        WriteSetChange {
+            r#type: 0,
+            change: Some(Change::WriteTableItem(WriteTableItem {
+                state_key_hash: vec![],
+                handle: handle.to_string(),
+                key: DELEGATOR_ADDRESS.to_string(),
+                data: Some(WriteTableData {
+                    key: format!("\"{DELEGATOR_ADDRESS}\""),
+                    key_type: "address".to_string(),
+                    value: format!("\"{shares}\""),
+                    value_type: "u128".to_string(),
+                }),
+            })),
+        }
+    }
+
+    fn inactive_pool_write(parent_handle: &str, shares_handle: &str) -> WriteSetChange {
+        let value = format!(
+            r#"{{"shares":{{"inner":{{"handle":"{shares_handle}"}}}},"total_coins":"500","total_shares":"500","scaling_factor":"1"}}"#
+        );
+        WriteSetChange {
+            r#type: 0,
+            change: Some(Change::WriteTableItem(WriteTableItem {
+                state_key_hash: vec![],
+                handle: parent_handle.to_string(),
+                key: "0x1".to_string(),
+                data: Some(WriteTableData {
+                    key: "\"0x1\"".to_string(),
+                    key_type: "address".to_string(),
+                    value,
+                    value_type: "0x1::pool_u64_unbound::Pool".to_string(),
+                }),
+            })),
+        }
+    }
+
+    fn stake_txn(changes: Vec<WriteSetChange>) -> Transaction {
+        Transaction {
+            timestamp: Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            version: 42,
+            info: Some(TransactionInfo {
+                hash: vec![],
+                state_change_hash: vec![],
+                event_root_hash: vec![],
+                state_checkpoint_hash: None,
+                gas_used: 0,
+                success: true,
+                vm_status: String::new(),
+                accumulator_root_hash: vec![],
+                changes,
+            }),
+            epoch: 0,
+            block_height: 0,
+            r#type: 4,
+            size_info: None,
+            txn_data: Some(TxnData::User(UserTransaction::default())),
+        }
+    }
+
+    #[tokio::test]
+    async fn parse_stake_data_without_conn_emits_active_share_balances() {
+        let txn = stake_txn(vec![
+            delegation_pool_write(ACTIVE_SHARE_HANDLE, INACTIVE_PARENT_HANDLE),
+            share_write(ACTIVE_SHARE_HANDLE, "1000000"),
+        ]);
+
+        let txns = vec![txn];
+        let (_, _, _, delegator_balances, current_delegator_balances, _, _, _, _) =
+            parse_stake_data(&txns, None, 0, 0)
+                .await
+                .expect("parse_stake_data with no conn should succeed");
+
+        assert_eq!(
+            delegator_balances.len(),
+            1,
+            "ParquetStakeExtractor passes None; active shares must still be parsed"
+        );
+        assert_eq!(delegator_balances[0].delegator_address, DELEGATOR_ADDRESS);
+        assert_eq!(delegator_balances[0].pool_address, POOL_ADDRESS);
+        assert_eq!(delegator_balances[0].pool_type, "active_shares");
+        assert_eq!(delegator_balances[0].shares.to_string(), "1000000");
+        assert_eq!(current_delegator_balances.len(), 1);
+        assert_eq!(current_delegator_balances[0].pool_type, "active_shares");
+        assert_eq!(current_delegator_balances[0].shares.to_string(), "1000000");
+    }
+
+    #[tokio::test]
+    async fn parse_stake_data_without_conn_emits_in_batch_inactive_shares() {
+        let txn = stake_txn(vec![
+            delegation_pool_write(ACTIVE_SHARE_HANDLE, INACTIVE_PARENT_HANDLE),
+            inactive_pool_write(INACTIVE_PARENT_HANDLE, INACTIVE_SHARE_HANDLE),
+            share_write(INACTIVE_SHARE_HANDLE, "500"),
+        ]);
+
+        let txns = vec![txn];
+        let (_, _, _, delegator_balances, current_delegator_balances, _, _, _, _) =
+            parse_stake_data(&txns, None, 0, 0)
+                .await
+                .expect("in-batch inactive shares should not require a DB connection");
+
+        assert_eq!(delegator_balances.len(), 1);
+        assert_eq!(delegator_balances[0].pool_type, "inactive_shares");
+        assert_eq!(delegator_balances[0].delegator_address, DELEGATOR_ADDRESS);
+        assert_eq!(delegator_balances[0].pool_address, POOL_ADDRESS);
+        assert_eq!(delegator_balances[0].shares.to_string(), "500");
+        assert_eq!(
+            delegator_balances[0].parent_table_handle,
+            INACTIVE_PARENT_HANDLE
+        );
+        assert_eq!(current_delegator_balances.len(), 1);
+        assert_eq!(current_delegator_balances[0].pool_type, "inactive_shares");
+    }
 }
