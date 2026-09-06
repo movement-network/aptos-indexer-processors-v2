@@ -250,7 +250,12 @@ pub fn insert_proposal_votes_query(
 
     diesel::insert_into(schema::proposal_votes::table)
         .values(items_to_insert)
-        .on_conflict((transaction_version, proposal_id, voter_address))
+        .on_conflict((
+            transaction_version,
+            proposal_id,
+            voter_address,
+            staking_pool_address,
+        ))
         .do_nothing()
 }
 
