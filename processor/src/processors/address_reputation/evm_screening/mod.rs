@@ -197,7 +197,7 @@ fn guid_future(
                 })
             },
             Ok(None) => {
-                // Permanent 404: sentinel written to DB, no retry.
+                // No EVM to screen (unused: fetch failures are Err and retry).
                 None
             },
             Err(_) => Some(RetryItem::Guid {

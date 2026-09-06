@@ -616,3 +616,121 @@ async fn test_malformed_response_exhausted_saves_error_score() {
         "should have made exactly MAX_RETRIES screening attempts on malformed responses"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: LZ Scan 404 is retryable — must not write the null sentinel
+// ---------------------------------------------------------------------------
+
+struct RecordingLzDb {
+    writes: Mutex<Vec<(String, String)>>,
+}
+
+impl RecordingLzDb {
+    fn new() -> Self {
+        Self {
+            writes: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn writes(&self) -> Vec<(String, String)> {
+        self.writes.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LzDb for RecordingLzDb {
+    async fn load_pending_guids(&self) -> VecDeque<String> {
+        VecDeque::new()
+    }
+
+    async fn write_evm(&self, guid: &str, evm: &str) {
+        self.writes
+            .lock()
+            .unwrap()
+            .push((guid.to_string(), evm.to_string()));
+    }
+}
+
+const TEST_GUID: &str = "0xe97fc9204872ba072f8d1a647d7045b881d20ff69aff1f050a0b05e8fb83228e";
+const GUID_EVM: &str = "0x97e6a34897a32e7103f3cf260f0c9ca5ca1fb90b";
+
+fn lz_success_body(evm: &str) -> serde_json::Value {
+    serde_json::json!({
+        "data": [{
+            "source": { "tx": { "from": evm } }
+        }]
+    })
+}
+
+/// Scan 404 (index lag) then 200: the loop retries and writes the resolved EVM.
+/// The old path wrote `EVM_NULL_SENTINEL` on the first 404, after which
+/// `load_pending_guids` never reloaded the GUID.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_lz_404_retries_then_writes_resolved_evm_not_sentinel() {
+    use processor::processors::address_reputation::evm_screening::lz_enricher::EVM_NULL_SENTINEL;
+    use wiremock::matchers::path_regex;
+
+    let lz_mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*"))
+        .respond_with(ResponseTemplate::new(404))
+        .up_to_n_times(1)
+        .mount(&lz_mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(".*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(lz_success_body(GUID_EVM)))
+        .mount(&lz_mock)
+        .await;
+
+    let hn_mock = MockServer::start().await;
+    mount_ping_mock(&hn_mock).await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut body = approve_body();
+            body["data"][0]["address"] = serde_json::Value::String(GUID_EVM.to_string());
+            body
+        }))
+        .mount(&hn_mock)
+        .await;
+
+    let lz_db = Arc::new(RecordingLzDb::new());
+    let lz = LzEnricher::new(lz_db.clone(), lz_mock.uri());
+
+    let (score_tx, mut score_rx) = mpsc::unbounded_channel();
+    let mock_db = Arc::new(MockScreeningDb::new(score_tx));
+    let db = Arc::clone(&mock_db) as Arc<dyn EvmScreeningDb>;
+
+    let hn = make_client(hn_mock.uri());
+    let (guid_tx, guid_rx) = mpsc::unbounded_channel::<String>();
+    let (_evm_tx, evm_rx) = mpsc::unbounded_channel::<String>();
+
+    let loop_ = EnricherLoop::new(db, guid_rx, evm_rx, lz, hn, 5)
+        .with_retry_delay(Duration::from_millis(10))
+        .with_reconnect_interval(Duration::from_millis(10));
+    tokio::spawn(loop_.run());
+    guid_tx.send(TEST_GUID.to_string()).unwrap();
+
+    // ping + first GUID 404 + 10ms retry + 200 + Hypernative screen
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let writes = lz_db.writes();
+    assert!(
+        !writes.iter().any(|(_, evm)| evm == EVM_NULL_SENTINEL),
+        "404 must not persist the null sentinel: {writes:?}"
+    );
+    assert_eq!(
+        writes,
+        vec![(TEST_GUID.to_string(), GUID_EVM.to_string())],
+        "only the resolved EVM should be written after 404-then-success"
+    );
+
+    let score = score_rx
+        .try_recv()
+        .expect("GUID-resolved EVM should be screened after 404 recovery");
+    assert!(
+        score.evm_address.eq_ignore_ascii_case(GUID_EVM),
+        "screened {}",
+        score.evm_address
+    );
+}
