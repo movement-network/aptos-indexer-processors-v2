@@ -284,10 +284,15 @@ async fn get_min_processed_version_from_db(
 fn min_processed_version_from_query_results(
     results: impl IntoIterator<Item = Result<Option<u64>, ProcessorError>>,
 ) -> Result<Option<u64>, ProcessorError> {
-    results.into_iter().try_fold(None, |min_so_far, res| {
+    let mut min_processed_version: Option<u64> = None;
+    for res in results {
         let version = res?.unwrap_or(0);
-        Ok(Some(min_so_far.map_or(version, |m| m.min(version))))
-    })
+        min_processed_version = Some(match min_processed_version {
+            Some(current) => current.min(version),
+            None => version,
+        });
+    }
+    Ok(min_processed_version)
 }
 
 async fn get_parquet_backfill_statuses(
