@@ -450,8 +450,6 @@ mod tests {
             verified_public_key_bit_map: vec![0x80, 0x00, 0x00, 0x00],
         };
 
-        assert!(
-            PublicKeyAuthKeyHelper::create_helper_from_key_rotation_event(&event, 1).is_none()
-        );
+        assert!(PublicKeyAuthKeyHelper::create_helper_from_key_rotation_event(&event, 1).is_none());
     }
 }
