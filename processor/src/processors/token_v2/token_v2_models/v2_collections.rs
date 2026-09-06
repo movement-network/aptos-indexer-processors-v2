@@ -102,55 +102,61 @@ impl CollectionV2 {
             let (mut mutable_description, mut mutable_uri) = (None, None);
             let mut collection_properties = serde_json::Value::Null;
             let address = standardize_address(&write_resource.address);
-            if let Some(object_data) = object_metadatas.get(&address) {
-                // Getting supply data (prefer fixed supply over unlimited supply although they should never appear at the same time anyway)
-                let fixed_supply = object_data.fixed_supply.as_ref();
-                let unlimited_supply = object_data.unlimited_supply.as_ref();
-                if let Some(supply) = unlimited_supply {
-                    (current_supply, max_supply, total_minted_v2) = (
-                        supply.current_supply.clone(),
-                        None,
-                        Some(supply.total_minted.clone()),
-                    );
-                }
-                if let Some(supply) = fixed_supply {
-                    (current_supply, max_supply, total_minted_v2) = (
-                        supply.current_supply.clone(),
-                        Some(supply.max_supply.clone()),
-                        Some(supply.total_minted.clone()),
-                    );
-                }
-
-                // Aggregator V2 enables a separate struct for supply
-                let concurrent_supply = object_data.concurrent_supply.as_ref();
-                if let Some(supply) = concurrent_supply {
-                    (current_supply, max_supply, total_minted_v2) = (
-                        supply.current_supply.value.clone(),
-                        if supply.current_supply.max_value == u64::MAX.into() {
-                            None
-                        } else {
-                            Some(supply.current_supply.max_value.clone())
-                        },
-                        Some(supply.total_minted.value.clone()),
-                    );
-                }
-
-                // Getting collection mutability config from AptosCollection
-                let collection = object_data.aptos_collection.as_ref();
-                if let Some(collection) = collection {
-                    mutable_description = Some(collection.mutable_description);
-                    mutable_uri = Some(collection.mutable_uri);
-                }
-
-                collection_properties = object_data
-                    .property_map
-                    .as_ref()
-                    .map(|m| m.inner.clone())
-                    .unwrap_or(collection_properties);
-            } else {
-                // ObjectCore should not be missing, returning from entire function early
-                return Ok(None);
+            // Collection was identified. Missing ObjectCore is not "this write
+            // resource is not a collection" — that is `Collection::from_write_resource`
+            // returning `Ok(None)`. The old path mapped the hole to `Ok(None)`
+            // so `parse_v2_token` skipped collections_v2 / current_collections_v2
+            // while TokenV2Extractor still succeeded and VersionTrackerStep
+            // advanced the checkpoint.
+            let object_data = require_object_core_for_collection(
+                object_metadatas.get(&address),
+                txn_version,
+                &address,
+            )?;
+            // Getting supply data (prefer fixed supply over unlimited supply although they should never appear at the same time anyway)
+            let fixed_supply = object_data.fixed_supply.as_ref();
+            let unlimited_supply = object_data.unlimited_supply.as_ref();
+            if let Some(supply) = unlimited_supply {
+                (current_supply, max_supply, total_minted_v2) = (
+                    supply.current_supply.clone(),
+                    None,
+                    Some(supply.total_minted.clone()),
+                );
             }
+            if let Some(supply) = fixed_supply {
+                (current_supply, max_supply, total_minted_v2) = (
+                    supply.current_supply.clone(),
+                    Some(supply.max_supply.clone()),
+                    Some(supply.total_minted.clone()),
+                );
+            }
+
+            // Aggregator V2 enables a separate struct for supply
+            let concurrent_supply = object_data.concurrent_supply.as_ref();
+            if let Some(supply) = concurrent_supply {
+                (current_supply, max_supply, total_minted_v2) = (
+                    supply.current_supply.value.clone(),
+                    if supply.current_supply.max_value == u64::MAX.into() {
+                        None
+                    } else {
+                        Some(supply.current_supply.max_value.clone())
+                    },
+                    Some(supply.total_minted.value.clone()),
+                );
+            }
+
+            // Getting collection mutability config from AptosCollection
+            let collection = object_data.aptos_collection.as_ref();
+            if let Some(collection) = collection {
+                mutable_description = Some(collection.mutable_description);
+                mutable_uri = Some(collection.mutable_uri);
+            }
+
+            collection_properties = object_data
+                .property_map
+                .as_ref()
+                .map(|m| m.inner.clone())
+                .unwrap_or(collection_properties);
 
             let collection_id = address;
             let creator_address = inner.get_creator_address();
@@ -349,6 +355,28 @@ impl CollectionV2 {
     }
 }
 
+/// After a `0x4::collection::Collection` write resource is identified,
+/// ObjectCore must be present in `object_metadatas` (same ObjectGroup).
+///
+/// * `Ok(metadata)` — persist collections_v2 / current_collections_v2
+/// * `Err(_)` — propagate so `parse_v2_token` fails (`.unwrap()` on main;
+///   `?` once #36/#37 land) and TokenV2Extractor does not succeed. The
+///   checkpoint does not advance.
+///
+/// The old write path mapped a missing ObjectCore onto `Ok(None)`, which is
+/// the same success signal as "this write resource is not CollectionV2".
+pub(crate) fn require_object_core_for_collection<T>(
+    object_metadata: Option<T>,
+    txn_version: i64,
+    collection_id: &str,
+) -> anyhow::Result<T> {
+    object_metadata.ok_or_else(|| {
+        anyhow::anyhow!(
+            "ObjectCore missing for CollectionV2 collection_id {collection_id}, txn version {txn_version}"
+        )
+    })
+}
+
 #[derive(
     Allocative, Clone, Debug, Default, Deserialize, FieldCount, ParquetRecordWriter, Serialize,
 )]
@@ -403,5 +431,144 @@ impl From<CollectionV2> for ParquetCollectionV2 {
             token_standard: collection.token_standard,
             block_timestamp: collection.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{require_object_core_for_collection, CollectionV2};
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use ahash::AHashMap;
+    use aptos_indexer_processor_sdk::{
+        aptos_protos::transaction::v1::{MoveStructTag, WriteResource},
+        utils::convert::standardize_address,
+    };
+
+    fn collection_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x4".to_string(),
+                module: "collection".to_string(),
+                name: "Collection".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x4::collection::Collection".to_string(),
+            data: r#"{"creator":"0xabc","description":"d","name":"n","uri":"u"}"#.to_string(),
+        }
+    }
+
+    fn non_collection_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectCore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectCore".to_string(),
+            data: r#"{"allow_ungated_transfer":true,"guid_creation_num":"0","owner":"0xabc"}"#
+                .to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_object_core_is_not_ok_none_skip() {
+        let result = require_object_core_for_collection(None::<()>, 42, "0xcol");
+        assert!(
+            result.is_err(),
+            "missing ObjectCore after Collection is identified must fail the write, not skip"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for CollectionV2"),
+            "error should name the CollectionV2 ObjectCore lookup, got: {message}"
+        );
+        assert!(
+            message.contains("0xcol"),
+            "error should include collection_id, got: {message}"
+        );
+    }
+
+    /// `get_v2_from_write_resource` used to map a missing ObjectCore to
+    /// `Ok(None)`. That is the same success signal as "this write resource
+    /// is not CollectionV2", so `parse_v2_token` still returned the batch and
+    /// `TokenV2Extractor` let `VersionTrackerStep` advance the checkpoint
+    /// while `collections_v2` / `current_collections_v2` never received
+    /// the confirmed Collection write.
+    ///
+    /// The write path now uses `require_object_core_for_collection`: only
+    /// `Collection::from_write_resource` returning `Ok(None)` skips; a hole
+    /// after Collection is identified is `Err`.
+    #[test]
+    fn write_path_does_not_map_missing_object_core_to_ok_none() {
+        let write_resource = collection_write_resource(
+            "0x00000000000000000000000000000000000000000000000000000000000000aa",
+        );
+        let empty_object_metadatas = AHashMap::new();
+        let write_result = CollectionV2::get_v2_from_write_resource(
+            &write_resource,
+            99,
+            0,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        );
+        assert!(
+            write_result.is_err(),
+            "missing ObjectCore must fail the write, not skip the collection row: {write_result:?}"
+        );
+        let message = write_result.unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for CollectionV2"),
+            "write-path error should name the ObjectCore hole, got: {message}"
+        );
+    }
+
+    #[test]
+    fn non_collection_write_is_intentional_ok_none() {
+        let write_resource = non_collection_write_resource("0x1");
+        let empty_object_metadatas = AHashMap::new();
+        let result = CollectionV2::get_v2_from_write_resource(
+            &write_resource,
+            1,
+            0,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        )
+        .unwrap();
+        assert!(
+            result.is_none(),
+            "a non-Collection write resource is intentional absence"
+        );
+    }
+
+    #[test]
+    fn resolved_object_core_is_kept() {
+        let metadata = require_object_core_for_collection(Some("object-core"), 1, "0xcol").unwrap();
+        assert_eq!(metadata, "object-core");
+
+        let address = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+        let write_resource = collection_write_resource(address);
+        let mut object_metadatas = AHashMap::new();
+        object_metadatas.insert(
+            standardize_address(address),
+            ObjectAggregatedData::default(),
+        );
+        let (collection, current) = CollectionV2::get_v2_from_write_resource(
+            &write_resource,
+            7,
+            1,
+            chrono::NaiveDateTime::default(),
+            &object_metadatas,
+        )
+        .unwrap()
+        .expect("Collection plus ObjectCore must persist collection");
+        assert_eq!(collection.collection_name, "n");
+        assert_eq!(collection.creator_address, standardize_address("0xabc"));
+        assert_eq!(current.last_transaction_version, 7);
+        assert_eq!(current.token_standard, "v2");
     }
 }
