@@ -350,13 +350,8 @@ mod tests {
         );
 
         let item = write_table_item(raw_handle);
-        let (table_item, current) = TableItem::from_write_table_item(
-            &item,
-            0,
-            1,
-            1,
-            chrono::NaiveDateTime::default(),
-        );
+        let (table_item, current) =
+            TableItem::from_write_table_item(&item, 0, 1, 1, chrono::NaiveDateTime::default());
         let metadata = TableMetadata::from_write_table_item(&item);
 
         let expected = standardize_address(raw_handle);
