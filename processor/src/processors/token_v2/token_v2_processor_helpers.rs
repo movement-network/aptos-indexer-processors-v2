@@ -46,7 +46,7 @@ pub async fn parse_v2_token(
     transactions: &[Transaction],
     table_handle_to_owner: &TableHandleToOwner,
     db_context: &mut Option<DbContext<'_>>,
-) -> (
+) -> anyhow::Result<(
     Vec<CollectionV2>,
     Vec<TokenDataV2>,
     Vec<TokenOwnershipV2>,
@@ -59,7 +59,7 @@ pub async fn parse_v2_token(
     Vec<CurrentTokenV2Metadata>,
     Vec<CurrentTokenRoyaltyV1>,
     Vec<CurrentTokenPendingClaim>,
-) {
+)> {
     // Token V2 and V1 combined
     let mut collections_v2 = vec![];
     let mut token_datas_v2 = vec![];
@@ -525,8 +525,7 @@ pub async fn parse_v2_token(
                                 &token_v2_metadata_helper,
                                 db_context,
                             )
-                            .await
-                            .unwrap()
+                            .await?
                         {
                             token_ownerships_v2.push(nft_ownership);
                             prior_nft_ownership.insert(
@@ -593,8 +592,7 @@ pub async fn parse_v2_token(
                                 &tokens_burned,
                                 db_context,
                             )
-                            .await
-                            .unwrap()
+                            .await?
                         {
                             token_ownerships_v2.push(nft_ownership);
                             prior_nft_ownership.insert(
@@ -657,7 +655,7 @@ pub async fn parse_v2_token(
     current_token_royalties_v1.sort();
     all_current_token_claims.sort();
 
-    (
+    Ok((
         collections_v2,
         token_datas_v2,
         token_ownerships_v2,
@@ -670,5 +668,5 @@ pub async fn parse_v2_token(
         current_token_v2_metadata,
         current_token_royalties_v1,
         all_current_token_claims,
-    )
+    ))
 }

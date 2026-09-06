@@ -390,25 +390,26 @@ impl TokenOwnershipV2 {
                                 DEFAULT_OWNER_ADDRESS.to_string()
                             },
                             Some(db_context) => {
-                                match CurrentTokenOwnershipV2Query::get_latest_owned_nft_by_token_data_id(
-                                    &mut db_context.conn,
-                                    &token_address,
-                                    db_context.query_retries,
-                                    db_context.query_retry_delay_ms,
-                                )
+                                // NotFound (backfill hole / race after retries)
+                                // is Ok(None) and skips this burn write.
+                                // Transient errors propagate so the batch
+                                // fails and the checkpoint does not advance.
+                                match apply_burned_nft_owner_lookup(
+                                    CurrentTokenOwnershipV2Query::get_latest_owned_nft_by_token_data_id(
+                                        &mut db_context.conn,
+                                        &token_address,
+                                        db_context.query_retries,
+                                        db_context.query_retry_delay_ms,
+                                    )
                                     .await
-                                {
-                                    Ok(nft) => nft.owner_address.clone(),
-                                    Err(_) => {
-                                        tracing::warn!(
-                                    transaction_version = txn_version,
-                                    lookup_key = &token_address,
-                                    "Failed to find current_token_ownership_v2 for burned token. You probably should backfill db."
-                                );
-                                        DEFAULT_OWNER_ADDRESS.to_string()
-                                    },
+                                    .map(|opt| opt.map(|nft| nft.owner_address)),
+                                    txn_version,
+                                    &token_address,
+                                )? {
+                                    Some(owner) => owner,
+                                    None => return Ok(None),
                                 }
-                            }
+                            },
                         }
                     },
                 }
@@ -621,24 +622,32 @@ impl TokenOwnershipV2 {
 }
 
 impl CurrentTokenOwnershipV2Query {
+    /// Look up the latest owned NFT row for a burned token.
+    ///
+    /// `Ok(None)` is only Diesel `NotFound` after retries (ownership never
+    /// indexed). Any other exhausted error is `Err` so a transient failure
+    /// cannot write a default-owner burn row — or skip the real owner's
+    /// burn — while the checkpoint advances.
     pub async fn get_latest_owned_nft_by_token_data_id(
         conn: &mut DbPoolConnection<'_>,
         token_data_id: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
-    ) -> anyhow::Result<NFTOwnershipV2> {
+    ) -> anyhow::Result<Option<NFTOwnershipV2>> {
         let mut tried = 0;
+        let mut last_err = None;
         while tried < query_retries {
             tried += 1;
             match Self::get_latest_owned_nft_by_token_data_id_impl(conn, token_data_id).await {
                 Ok(inner) => {
-                    return Ok(NFTOwnershipV2 {
+                    return Ok(Some(NFTOwnershipV2 {
                         token_data_id: inner.token_data_id.clone(),
                         owner_address: inner.owner_address.clone(),
                         is_soulbound: inner.is_soulbound_v2,
-                    });
+                    }));
                 },
-                Err(_) => {
+                Err(e) => {
+                    last_err = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -646,10 +655,15 @@ impl CurrentTokenOwnershipV2Query {
                 },
             }
         }
-        Err(anyhow::anyhow!(
-            "Failed to get nft by token data id: {}",
-            token_data_id
-        ))
+        match last_err {
+            Some(e) => {
+                owner_from_exhausted_nft_lookup(e)?;
+                Ok(None)
+            },
+            None => Err(anyhow::anyhow!(
+                "Failed to get nft by token data id: no lookup attempts (query_retries = 0)"
+            )),
+        }
     }
 
     async fn get_latest_owned_nft_by_token_data_id_impl(
@@ -661,6 +675,55 @@ impl CurrentTokenOwnershipV2Query {
             .filter(current_token_ownerships_v2::amount.gt(BigDecimal::zero()))
             .first::<Self>(conn)
             .await
+    }
+}
+
+/// Classify a token-data-id → owner lookup after retries are exhausted.
+///
+/// `NotFound` is a backfill hole: skip this burned-NFT write. Any other
+/// error (connection, timeout, deserialization) must propagate. The old
+/// path mapped every `Err` to owner `"unknown"` and persisted the burn
+/// against that placeholder PK, so a transient failure permanently dropped
+/// the real owner's amount-zero update and `VersionTrackerStep` still
+/// advanced the checkpoint.
+pub(crate) fn owner_from_exhausted_nft_lookup(
+    err: diesel::result::Error,
+) -> anyhow::Result<Option<String>> {
+    match err {
+        diesel::result::Error::NotFound => Ok(None),
+        other => Err(anyhow::anyhow!(
+            "Failed to get burned NFT owner from current_token_ownerships_v2: {other}"
+        )),
+    }
+}
+
+/// Apply a classified owner lookup to a burned-NFT write.
+///
+/// * `Ok(Some(addr))` — persist the burn against that owner
+/// * `Ok(None)` — backfill hole; skip this write-set change
+/// * `Err(_)` — propagate so `parse_v2_token` fails and `TokenV2Extractor`
+///   returns `ProcessorError` (checkpoint does not advance)
+///
+/// The old write path mapped every lookup `Err` onto
+/// `DEFAULT_OWNER_ADDRESS`. That is not the same as "this resource is not
+/// a burned NFT", but it still let the batch succeed: the real owner's
+/// `current_token_ownerships_v2` row was never zeroed.
+pub(crate) fn apply_burned_nft_owner_lookup(
+    lookup: anyhow::Result<Option<String>>,
+    txn_version: i64,
+    token_address: &str,
+) -> anyhow::Result<Option<String>> {
+    match lookup {
+        Ok(Some(owner)) => Ok(Some(owner)),
+        Ok(None) => {
+            tracing::warn!(
+                transaction_version = txn_version,
+                lookup_key = token_address,
+                "Failed to find current_token_ownership_v2 for burned token. You probably should backfill db."
+            );
+            Ok(None)
+        },
+        Err(e) => Err(e),
     }
 }
 
@@ -833,5 +896,80 @@ impl From<CurrentTokenOwnershipV2> for PostgresCurrentTokenOwnershipV2 {
             last_transaction_timestamp: raw_item.last_transaction_timestamp,
             non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_burned_nft_owner_lookup, owner_from_exhausted_nft_lookup};
+    use diesel::result::Error;
+
+    #[test]
+    fn not_found_skips_write() {
+        assert_eq!(
+            owner_from_exhausted_nft_lookup(Error::NotFound).unwrap(),
+            None
+        );
+        assert_eq!(
+            apply_burned_nft_owner_lookup(
+                owner_from_exhausted_nft_lookup(Error::NotFound),
+                42,
+                "0xtoken",
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn connection_error_is_not_ok_none_skip() {
+        let err = Error::DeserializationError("connection reset".into());
+        let result = owner_from_exhausted_nft_lookup(err);
+        assert!(
+            result.is_err(),
+            "lookup failure must not look like a missing burned-NFT owner"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("burned NFT owner"),
+            "error should name the burned-NFT owner lookup, got: {message}"
+        );
+        assert!(
+            !message.contains("NotFound"),
+            "transient error must not be classified as NotFound"
+        );
+    }
+
+    #[test]
+    fn query_builder_error_is_not_ok_none_skip() {
+        let err = Error::QueryBuilderError("broken connection".into());
+        assert!(owner_from_exhausted_nft_lookup(err).is_err());
+    }
+
+    /// `get_burned_nft_v2_helper` used to map every lookup error to owner
+    /// `"unknown"` and still return `Ok(Some(...))`. `parse_v2_token` then
+    /// treated that as a successful burn write against the wrong PK, so
+    /// `TokenV2Extractor` let `VersionTrackerStep` advance the checkpoint
+    /// while the real owner's `current_token_ownerships_v2.amount` stayed
+    /// positive.
+    ///
+    /// The write path now uses `apply_burned_nft_owner_lookup`: only
+    /// `Ok(None)` skips; `Err` stays `Err`.
+    #[test]
+    fn write_path_does_not_map_lookup_err_to_ok_none() {
+        let lookup_err =
+            owner_from_exhausted_nft_lookup(Error::QueryBuilderError("connection timeout".into()));
+        let write_result = apply_burned_nft_owner_lookup(lookup_err, 99, "0xtoken");
+        assert!(
+            write_result.is_err(),
+            "transient lookup failure must fail the write, not skip or default-owner the burn"
+        );
+    }
+
+    #[test]
+    fn resolved_owner_is_kept() {
+        let owner =
+            apply_burned_nft_owner_lookup(Ok(Some("0xowner".to_string())), 1, "0xtoken").unwrap();
+        assert_eq!(owner.as_deref(), Some("0xowner"));
     }
 }
