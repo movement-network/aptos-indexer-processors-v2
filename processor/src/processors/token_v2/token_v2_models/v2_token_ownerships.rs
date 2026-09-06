@@ -846,7 +846,11 @@ mod tests {
     const TOKEN_ADDR: &str = "0xabc";
     const OWNER_ADDR: &str = "0xdef";
 
-    fn object_core_write(address: &str, allow_ungated_transfer: bool, owner: &str) -> WriteResource {
+    fn object_core_write(
+        address: &str,
+        allow_ungated_transfer: bool,
+        owner: &str,
+    ) -> WriteResource {
         WriteResource {
             address: address.to_string(),
             state_key_hash: vec![],
@@ -883,13 +887,10 @@ mod tests {
         untransferable: Option<Untransferable>,
     ) -> ObjectAggregatedDataMapping {
         let mut map = AHashMap::new();
-        map.insert(
-            standardize_address(token_address),
-            ObjectAggregatedData {
-                untransferable,
-                ..ObjectAggregatedData::default()
-            },
-        );
+        map.insert(standardize_address(token_address), ObjectAggregatedData {
+            untransferable,
+            ..ObjectAggregatedData::default()
+        });
         map
     }
 
