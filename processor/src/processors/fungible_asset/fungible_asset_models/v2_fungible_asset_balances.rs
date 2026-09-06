@@ -696,8 +696,7 @@ mod tests {
     fn delete_resource_preserves_primary_store_flag() {
         let owner_address = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
         let metadata_address = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
-        let primary_store =
-            "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
+        let primary_store = "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
 
         let mut events = StoreAddressToDeletedFungibleAssetStoreEvent::new();
         events.insert(
@@ -732,8 +731,7 @@ mod tests {
     fn delete_resource_keeps_secondary_store_flag() {
         let owner_address = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
         let metadata_address = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
-        let secondary_store =
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let secondary_store = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
         let mut events = StoreAddressToDeletedFungibleAssetStoreEvent::new();
         events.insert(
