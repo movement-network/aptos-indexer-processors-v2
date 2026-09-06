@@ -39,9 +39,6 @@ lazy_static! {
     ];
 }
 
-const ROTATE_AUTH_KEY_WITH_CAPABILITY: &str =
-    "0x1::account::rotate_authentication_key_with_rotation_capability";
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Account {
     authentication_key: String,
@@ -280,6 +277,9 @@ fn public_key_mapping_auth_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ROTATE_AUTH_KEY_WITH_CAPABILITY: &str =
+        "0x1::account::rotate_authentication_key_with_rotation_capability";
 
     fn acct(auth_key: &str, account_address: &str) -> AuthKeyAccountAddress {
         AuthKeyAccountAddress {
