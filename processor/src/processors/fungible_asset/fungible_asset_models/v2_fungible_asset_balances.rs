@@ -208,37 +208,44 @@ impl FungibleAssetBalance {
     ) -> anyhow::Result<Option<Self>> {
         if let Some(inner) = &FungibleAssetStore::from_write_resource(write_resource)? {
             let storage_id = standardize_address(write_resource.address.as_str());
-            // Need to get the object of the store
-            if let Some(object_data) = object_metadatas.get(&storage_id) {
-                let object = &object_data.object.object_core;
-                let owner_address = object.get_owner_address();
-                let asset_type = inner.metadata.get_reference_address();
-                let is_primary = Self::is_primary(&owner_address, &asset_type, &storage_id);
+            // FungibleStore was identified. Missing ObjectCore is not "this write
+            // resource is not an FA balance" — that is
+            // `FungibleAssetStore::from_write_resource` returning `Ok(None)`.
+            // The old path mapped the hole to `Ok(None)` so `parse_v2_coin`
+            // skipped fungible_asset_balances while FungibleAssetExtractor
+            // still succeeded and VersionTrackerStep advanced the checkpoint.
+            let object_data = require_object_core_for_fa_balance(
+                object_metadatas.get(&storage_id),
+                txn_version,
+                &storage_id,
+            )?;
+            let object = &object_data.object.object_core;
+            let owner_address = object.get_owner_address();
+            let asset_type = inner.metadata.get_reference_address();
+            let is_primary = Self::is_primary(&owner_address, &asset_type, &storage_id);
 
-                #[allow(clippy::useless_asref)]
-                let concurrent_balance = object_data
-                    .concurrent_fungible_asset_balance
-                    .as_ref()
-                    .map(|concurrent_fungible_asset_balance| {
-                        concurrent_fungible_asset_balance.balance.value.clone()
-                    });
+            #[allow(clippy::useless_asref)]
+            let concurrent_balance = object_data.concurrent_fungible_asset_balance.as_ref().map(
+                |concurrent_fungible_asset_balance| {
+                    concurrent_fungible_asset_balance.balance.value.clone()
+                },
+            );
 
-                let coin_balance = Self {
-                    transaction_version: txn_version,
-                    write_set_change_index,
-                    storage_id: storage_id.clone(),
-                    owner_address: owner_address.clone(),
-                    asset_type: asset_type.clone(),
-                    is_primary,
-                    is_frozen: inner.frozen,
-                    amount: concurrent_balance
-                        .clone()
-                        .unwrap_or_else(|| inner.balance.clone()),
-                    transaction_timestamp: txn_timestamp,
-                    token_standard: TokenStandard::V2.to_string(),
-                };
-                return Ok(Some(coin_balance));
-            }
+            let coin_balance = Self {
+                transaction_version: txn_version,
+                write_set_change_index,
+                storage_id: storage_id.clone(),
+                owner_address: owner_address.clone(),
+                asset_type: asset_type.clone(),
+                is_primary,
+                is_frozen: inner.frozen,
+                amount: concurrent_balance
+                    .clone()
+                    .unwrap_or_else(|| inner.balance.clone()),
+                transaction_timestamp: txn_timestamp,
+                token_standard: TokenStandard::V2.to_string(),
+            };
+            return Ok(Some(coin_balance));
         }
 
         Ok(None)
@@ -395,6 +402,28 @@ impl FungibleAssetBalance {
         fungible_store_address
             == get_primary_fungible_store_address(owner_address, metadata_address).unwrap()
     }
+}
+
+/// After a `0x1::fungible_asset::FungibleStore` write resource is identified,
+/// ObjectCore must be present in `object_metadatas` (same ObjectGroup).
+///
+/// * `Ok(metadata)` — persist fungible_asset_balances
+/// * `Err(_)` — propagate so `parse_v2_coin` fails (`unwrap_or_else` + panic
+///   on main) and FungibleAssetExtractor does not succeed. The checkpoint
+///   does not advance.
+///
+/// The old write path mapped a missing ObjectCore onto `Ok(None)`, which is
+/// the same success signal as "this write resource is not an FA balance".
+pub(crate) fn require_object_core_for_fa_balance<T>(
+    object_metadata: Option<T>,
+    txn_version: i64,
+    storage_id: &str,
+) -> anyhow::Result<T> {
+    object_metadata.ok_or_else(|| {
+        anyhow::anyhow!(
+            "ObjectCore missing for FA balance storage_id {storage_id}, txn version {txn_version}"
+        )
+    })
 }
 
 // Parquet Models
@@ -612,6 +641,10 @@ impl From<CurrentUnifiedFungibleAssetBalance> for PostgresCurrentUnifiedFungible
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        MoveStructTag, WriteResource,
+    };
 
     #[test]
     fn test_is_primary() {
@@ -661,5 +694,169 @@ mod tests {
             *APT_METADATA_ADDRESS_HEX
         );
         assert_eq!(get_paired_metadata_address("0x66c34778730acbb120cefa57a3d98fd21e0c8b3a51e9baee530088b2e444e94c::moon_coin::MoonCoin"), "0xf772c28c069aa7e4417d85d771957eb3c5c11b5bf90b1965cda23b899ebc0384");
+    }
+
+    fn fa_store_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "fungible_asset".to_string(),
+                name: "FungibleStore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::fungible_asset::FungibleStore".to_string(),
+            data: r#"{"metadata":{"inner":"0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309"},"balance":"100","frozen":false}"#
+                .to_string(),
+        }
+    }
+
+    fn non_store_write_resource(address: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectCore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectCore".to_string(),
+            data: r#"{"allow_ungated_transfer":true,"guid_creation_num":"0","owner":"0xabc"}"#
+                .to_string(),
+        }
+    }
+
+    fn object_data_with_owner(owner: &str) -> ObjectAggregatedData {
+        let mut object_data = ObjectAggregatedData::default();
+        object_data.object.object_core = serde_json::from_str(&format!(
+            r#"{{"allow_ungated_transfer":true,"guid_creation_num":"0","owner":"{owner}"}}"#
+        ))
+        .expect("valid ObjectCore JSON");
+        object_data
+    }
+
+    /// parse_v2_coin Loop 5: `Ok(None)` skips the balance row and the
+    /// extractor still returns `Ok`, so VersionTrackerStep advances.
+    /// `Err` hits `unwrap_or_else` + panic and the checkpoint does not.
+    fn parse_v2_coin_would_advance_checkpoint(
+        write_result: &anyhow::Result<Option<FungibleAssetBalance>>,
+    ) -> bool {
+        write_result.is_ok()
+    }
+
+    #[test]
+    fn missing_object_core_is_not_ok_none_skip() {
+        let result = require_object_core_for_fa_balance(None::<()>, 42, "0xstore");
+        assert!(
+            result.is_err(),
+            "missing ObjectCore after FungibleStore is identified must fail the write, not skip"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for FA balance"),
+            "error should name the FA balance ObjectCore lookup, got: {message}"
+        );
+        assert!(
+            message.contains("0xstore"),
+            "error should include storage_id, got: {message}"
+        );
+    }
+
+    /// `get_v2_from_write_resource` used to map a missing ObjectCore to
+    /// `Ok(None)`. That is the same success signal as "this write resource
+    /// is not an FA balance", so `parse_v2_coin` still returned the batch and
+    /// `FungibleAssetExtractor` let `VersionTrackerStep` advance the
+    /// checkpoint while `fungible_asset_balances` never received the
+    /// confirmed FungibleStore write.
+    ///
+    /// The write path now uses `require_object_core_for_fa_balance`: only
+    /// `FungibleAssetStore::from_write_resource` returning `Ok(None)`
+    /// skips; a hole after FungibleStore is identified is `Err`.
+    #[test]
+    fn write_path_does_not_map_missing_object_core_to_ok_none() {
+        let write_resource = fa_store_write_resource(
+            "0x00000000000000000000000000000000000000000000000000000000000000aa",
+        );
+        let empty_object_metadatas = AHashMap::new();
+        let write_result = FungibleAssetBalance::get_v2_from_write_resource(
+            &write_resource,
+            0,
+            99,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        );
+        assert!(
+            write_result.is_err(),
+            "missing ObjectCore must fail the write, not skip the balance row: {write_result:?}"
+        );
+        let message = write_result.as_ref().unwrap_err().to_string();
+        assert!(
+            message.contains("ObjectCore missing for FA balance"),
+            "write-path error should name the ObjectCore hole, got: {message}"
+        );
+        assert!(
+            !parse_v2_coin_would_advance_checkpoint(&write_result),
+            "Err from a confirmed FungibleStore write must not advance the checkpoint"
+        );
+    }
+
+    #[test]
+    fn non_store_write_is_intentional_ok_none() {
+        let write_resource = non_store_write_resource("0x1");
+        let empty_object_metadatas = AHashMap::new();
+        let result = FungibleAssetBalance::get_v2_from_write_resource(
+            &write_resource,
+            0,
+            1,
+            chrono::NaiveDateTime::default(),
+            &empty_object_metadatas,
+        )
+        .unwrap();
+        assert!(
+            result.is_none(),
+            "a non-FungibleStore write resource is intentional absence"
+        );
+        assert!(
+            parse_v2_coin_would_advance_checkpoint(&Ok(None)),
+            "intentional absence remains Ok(None) and the checkpoint still advances"
+        );
+    }
+
+    #[test]
+    fn resolved_object_core_is_kept() {
+        let metadata =
+            require_object_core_for_fa_balance(Some("object-core"), 1, "0xstore").unwrap();
+        assert_eq!(metadata, "object-core");
+
+        let address = "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
+        let owner = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let write_resource = fa_store_write_resource(address);
+        let mut object_metadatas = AHashMap::new();
+        object_metadatas.insert(standardize_address(address), object_data_with_owner(owner));
+        let balance = FungibleAssetBalance::get_v2_from_write_resource(
+            &write_resource,
+            1,
+            7,
+            chrono::NaiveDateTime::default(),
+            &object_metadatas,
+        )
+        .unwrap()
+        .expect("FungibleStore plus ObjectCore must persist the balance");
+        assert_eq!(balance.owner_address, owner);
+        assert_eq!(
+            balance.asset_type,
+            "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309"
+        );
+        assert_eq!(balance.amount, BigDecimal::from(100));
+        assert!(!balance.is_frozen);
+        assert!(balance.is_primary);
+        assert_eq!(balance.transaction_version, 7);
+        assert_eq!(balance.token_standard, "v2");
+        assert!(
+            parse_v2_coin_would_advance_checkpoint(&Ok(Some(balance))),
+            "a persisted FA balance row still advances the checkpoint"
+        );
     }
 }
