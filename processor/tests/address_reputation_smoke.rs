@@ -196,13 +196,12 @@ fn make_adapter_style_receive_txn() -> Transaction {
     let mut txn = make_mint_txn();
     let withdraw_data = format!(r#"{{"store":"{ESCROW_STORE}","amount":"{MINT_AMOUNT}"}}"#);
     if let Some(TxnData::User(user)) = txn.txn_data.as_mut() {
-        user.events.insert(
-            0,
-            fa_event("0x1::fungible_asset::Withdraw", withdraw_data),
-        );
+        user.events
+            .insert(0, fa_event("0x1::fungible_asset::Withdraw", withdraw_data));
     }
     if let Some(info) = txn.info.as_mut() {
-        info.changes.push(object_core_write(ESCROW_STORE, ESCROW_OWNER));
+        info.changes
+            .push(object_core_write(ESCROW_STORE, ESCROW_OWNER));
         info.changes
             .push(fungible_store_write(ESCROW_STORE, USDCX_METADATA));
     }
@@ -379,7 +378,10 @@ async fn extractor_emits_paired_and_synthetic_bridge_edges() {
     assert_eq!(inflows.len(), 1);
     assert_eq!(inflows[0].event_index, 2);
     assert_eq!(inflows[0].aptos_recipient, MINT_RECIPIENT_OWNER);
-    assert_eq!(inflows[0].evm_source.as_deref(), Some(INTENT_LOCAL_DEPOSITOR));
+    assert_eq!(
+        inflows[0].evm_source.as_deref(),
+        Some(INTENT_LOCAL_DEPOSITOR)
+    );
 
     let bridge_edges: Vec<_> = edges.iter().filter(|e| e.is_bridge_inflow).collect();
     assert_eq!(
