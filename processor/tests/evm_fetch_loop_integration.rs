@@ -30,7 +30,7 @@ use bigdecimal::BigDecimal;
 use processor::processors::address_reputation::{
     address_reputation_model::EvmRiskScore,
     evm_screening::{
-        hypernative::{EvmScreeningDb, HypernativeClient},
+        hypernative::{screen_evms, EvmScreeningDb, HypernativeClient},
         lz_enricher::{LzDb, LzEnricher},
         EnricherLoop,
     },
@@ -281,6 +281,7 @@ async fn evm_fetch_loop_integration() {
 // ===========================================================================
 
 const TEST_EVM: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_EVM_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 /// The null address used by HypernativeClient::ping() to verify connectivity.
 const PING_ADDR: &str = "0x0000000000000000000000000000000000000000";
 /// MAX_RETRIES from evm_connection.rs.
@@ -614,5 +615,155 @@ async fn test_malformed_response_exhausted_saves_error_score() {
         screening_request_count(&mock).await,
         MAX_RETRIES as usize,
         "should have made exactly MAX_RETRIES screening attempts on malformed responses"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Partial `data`: only cache / finish addresses Hypernative actually returned
+// ---------------------------------------------------------------------------
+
+/// HTTP 200 with `data` containing TEST_EVM only — TEST_EVM_B is omitted.
+fn partial_body_only_a() -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": [{
+            "address": TEST_EVM,
+            "recommendation": "Approve",
+            "severity": "N/A",
+            "totalIncomingUsd": 0.0,
+            "totalOutgoingUsd": 0.0,
+            "policyId": "test-policy",
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "flags": []
+        }],
+        "error": null
+    })
+}
+
+struct RecordingDb {
+    saved: Mutex<Vec<EvmRiskScore>>,
+}
+
+impl RecordingDb {
+    fn new() -> Self {
+        Self {
+            saved: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn saved(&self) -> Vec<EvmRiskScore> {
+        self.saved.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl EvmScreeningDb for RecordingDb {
+    async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()> {
+        self.saved.lock().unwrap().push(score.clone());
+        Ok(())
+    }
+
+    async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+        false
+    }
+
+    async fn load_pending_evms(&self) -> VecDeque<String> {
+        VecDeque::new()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_fetch_batch_partial_data_does_not_cache_missing_address() {
+    let mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(partial_body_only_a()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let results = hn
+        .fetch_batch(&[TEST_EVM, TEST_EVM_B])
+        .await
+        .expect("partial data is a successful parse");
+
+    assert!(
+        results
+            .iter()
+            .any(|r| r.address.eq_ignore_ascii_case(TEST_EVM) && !r.duplicate),
+        "returned address must be present and not marked duplicate"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|r| !r.address.eq_ignore_ascii_case(TEST_EVM_B)),
+        "omitted address must not be synthesized as a successful result"
+    );
+
+    // Present address is cached: a follow-up call must not hit the API.
+    let cached = hn
+        .fetch_batch(&[TEST_EVM])
+        .await
+        .expect("cache lookup should succeed");
+    assert_eq!(cached.len(), 1);
+    assert!(cached[0].duplicate, "returned address should be cached");
+
+    // Omitted address must stay uncached so a later screen can retry it.
+    let retry = hn
+        .fetch_batch(&[TEST_EVM_B])
+        .await
+        .expect("uncached omitted address should hit the API");
+    assert!(
+        retry.iter().all(|r| !r.duplicate),
+        "omitted address must not be treated as a TTL duplicate"
+    );
+
+    let request_count = mock.received_requests().await.unwrap().len();
+    assert_eq!(
+        request_count, 2,
+        "expected one batch request plus one retry of the omitted address"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_screen_evms_partial_data_saves_error_score_for_missing_address() {
+    let mock = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(partial_body_only_a()))
+        .mount(&mock)
+        .await;
+
+    let hn = make_client(mock.uri());
+    let db = RecordingDb::new();
+    let retry = screen_evms(&hn, &db, &[TEST_EVM.to_string(), TEST_EVM_B.to_string()]).await;
+    assert!(!retry, "partial data is not a batch-level fetch failure");
+
+    let saved = db.saved();
+    assert_eq!(saved.len(), 2, "both requested addresses must be persisted");
+
+    let present = saved
+        .iter()
+        .find(|s| s.evm_address.eq_ignore_ascii_case(TEST_EVM))
+        .expect("returned address score missing");
+    assert_eq!(present.recommendation.to_lowercase(), "approve");
+    assert!(
+        !present.to_be_updated,
+        "returned address is a finished screen"
+    );
+    assert_ne!(present.risk_score, BigDecimal::from(0));
+
+    let missing = saved
+        .iter()
+        .find(|s| s.evm_address.eq_ignore_ascii_case(TEST_EVM_B))
+        .expect("omitted address score missing");
+    assert_eq!(
+        missing.risk_score,
+        BigDecimal::from(0),
+        "omitted address must use error_score, not a finished 0.1"
+    );
+    assert!(
+        missing.to_be_updated,
+        "omitted address must stay pending for a later screen"
     );
 }

@@ -21,9 +21,10 @@
 //!   callers know to skip saving (not retry). No API call is made.
 //! - **Not in cache** → included in the Hypernative request.
 //!
-//! Entries are inserted only after a successful API response, so a failed request
-//! leaves the address uncached and retryable. `moka` enforces the TTL expiry and
-//! a maximum capacity automatically — no manual eviction needed.
+//! Entries are inserted only after a successful parse, and only for addresses
+//! that Hypernative actually returned in `data`. A failed request or an address
+//! absent from the response stays uncached and retryable. `moka` enforces the
+//! TTL expiry and a maximum capacity automatically — no manual eviction needed.
 
 pub use super::evm_storer::{DbScoreSaver, EvmScreeningDb};
 use super::{super::address_reputation_model::EvmRiskScore, lz_enricher::EVM_NULL_SENTINEL};
@@ -230,9 +231,10 @@ impl HypernativeClient {
     ///
     /// After acquiring a rate-limiter slot, addresses already present in the TTL
     /// cache are returned as `HypernativeResult { duplicate: true }` without hitting
-    /// the API. Only uncached addresses are sent to Hypernative. On success, those
-    /// addresses are inserted into the cache; on any failure they remain uncached so
-    /// the retry mechanism can re-send them.
+    /// the API. Only uncached addresses are sent to Hypernative. On success, only
+    /// addresses present in the parsed `data` array are cached; addresses the API
+    /// omitted stay uncached so they can be retried. On any failure the whole
+    /// requested set remains uncached.
     pub async fn fetch_batch(&self, addresses: &[&str]) -> anyhow::Result<Vec<HypernativeResult>> {
         let permit = self.rate_limiter.acquire().await;
 
@@ -342,9 +344,12 @@ impl HypernativeClient {
             });
         }
 
-        // Cache only after fully successful parse so malformed responses stay retryable.
-        for &addr in &to_process {
-            self.cache.insert(addr.to_lowercase(), ()).await;
+        // Cache only addresses Hypernative actually returned. Caching the whole
+        // requested set would suppress retries for addresses omitted from `data`.
+        for result in &new_results {
+            if !result.address.is_empty() {
+                self.cache.insert(result.address.to_lowercase(), ()).await;
+            }
         }
         results.extend(new_results);
 
@@ -377,7 +382,8 @@ pub fn error_score(evm: &str) -> EvmRiskScore {
 /// Score formula: `recommendation_value + severity_value`
 /// - deny: 1.0, approve/other: 0.1, not available: 0.0
 /// - high: 0.9, medium: 0.6, low: 0.4, other/not available: 0.1
-/// - N/A (no Hypernative response): 0.0 + 0.1 = 0.1
+/// - N/A recommendation from Hypernative: 0.0 + 0.1 = 0.1
+/// - address absent from the response uses `error_score` (risk_score = 0) instead
 /// - error (stored separately as risk_score = 0 in DB)
 pub fn compute_risk_score(evm: &str, result: &HypernativeResult, source: &str) -> EvmRiskScore {
     let rec = if result.recommendation.eq_ignore_ascii_case("deny") {
@@ -412,7 +418,8 @@ pub fn compute_risk_score(evm: &str, result: &HypernativeResult, source: &str) -
 /// Screen a batch of EVM addresses: one Hypernative API call, compute and
 /// persist a score for each address in the batch, log every result.
 /// Returns `true` if the API call itself failed and the whole batch should be
-/// retried; addresses absent from the response get `risk_score = 0`.
+/// retried. Addresses absent from the response get `error_score` (`risk_score = 0`,
+/// `to_be_updated = true`) so they stay pending instead of a finished 0.1 score.
 pub async fn screen_evms(
     hn: &HypernativeClient,
     saver: &dyn EvmScreeningDb,
@@ -436,17 +443,6 @@ pub async fn screen_evms(
         },
     };
 
-    let mut not_available = HypernativeResult {
-        address: String::new(),
-        recommendation: "not available".to_string(),
-        severity: "not available".to_string(),
-        total_incoming_usd: None,
-        total_outgoing_usd: None,
-        policy_id: None,
-        screened_at: None,
-        duplicate: false,
-    };
-
     for evm in &addrs {
         let result = results.iter().find(|r| r.address.eq_ignore_ascii_case(evm));
 
@@ -456,17 +452,16 @@ pub async fn screen_evms(
             continue;
         }
 
-        // If the adddress is missing set it in error with 0 score.
-        // This case shouldn't arrive.
-        let score = compute_risk_score(
-            evm,
-            result.unwrap_or_else(|| {
-                not_available.address = evm.to_string();
-                warn!(evm_address = %evm, "evm_fetch_loop: evm address not return by Hypernative API call.");
-                &not_available
-            }),
-            hn.screener_url(),
-        );
+        let score = match result {
+            Some(r) => compute_risk_score(evm, r, hn.screener_url()),
+            None => {
+                warn!(
+                    evm_address = %evm,
+                    "evm_fetch_loop: evm address not return by Hypernative API call."
+                );
+                error_score(evm)
+            },
+        };
         if let Err(e) = saver.save(&score).await {
             tracing::error!(evm_address = %evm, err = %e, "evm_fetch_loop: failed to save risk score");
         } else {
