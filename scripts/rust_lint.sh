@@ -25,7 +25,10 @@ fi
 set -e
 set -x
 
-cargo +nightly xclippy
+# Run clippy on the pinned STABLE toolchain (from rust-toolchain.toml), NOT
+# nightly. Latest nightly makes Infallible an alias of !, which breaks
+# allocative (impl Allocative for both). Stable clippy matches the build toolchain.
+cargo xclippy
 
 # We require the nightly build of cargo fmt
 # to provide stricter rust formatting.
