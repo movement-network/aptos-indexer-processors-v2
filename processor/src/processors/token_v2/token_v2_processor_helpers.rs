@@ -10,7 +10,9 @@ use crate::{
         },
         token_v2::{
             token_models::{
-                token_claims::{CurrentTokenPendingClaim, TokenV1Canceled, TokenV1Claimed},
+                token_claims::{
+                    CurrentTokenPendingClaim, TokenV1Canceled, TokenV1Claimed, TokenV1Offered,
+                },
                 token_royalty::CurrentTokenRoyaltyV1,
                 tokens::{
                     CurrentTokenPendingClaimPK, TableHandleToOwner, TokenV1DepositModuleEvents,
@@ -135,6 +137,10 @@ pub async fn parse_v2_token(
             // Get cancel events for token v1 by table handle
             let mut tokens_canceled: TokenV1Canceled = AHashMap::new();
 
+            // Get offer events for token v1 so subsequent PendingClaims writes
+            // can recover the offerer when the parent resource is not rewritten.
+            let mut tokens_offered: TokenV1Offered = AHashMap::new();
+
             // Get withdraw and deposit module events for token v1 by token data id
             let mut tokens_withdrawn: TokenV1WithdrawModuleEvents = AHashMap::new();
             let mut tokens_deposited: TokenV1DepositModuleEvents = AHashMap::new();
@@ -251,6 +257,7 @@ pub async fn parse_v2_token(
                     &mut tokens_canceled,
                     &mut tokens_withdrawn,
                     &mut tokens_deposited,
+                    &mut tokens_offered,
                 )
                 .unwrap()
                 {
@@ -363,8 +370,9 @@ pub async fn parse_v2_token(
                                 table_item,
                                 txn_version,
                                 txn_timestamp,
-                                // TODO: Use module events
                                 table_handle_to_owner,
+                                &tokens_offered,
+                                &tokens_withdrawn,
                             )
                             .unwrap()
                         {
