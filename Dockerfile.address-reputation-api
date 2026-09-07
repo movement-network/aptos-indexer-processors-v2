@@ -13,6 +13,7 @@ RUN apt-get update \
         cmake \
         curl \
         clang \
+        make \
         git \
         pkg-config \
         libssl-dev \
