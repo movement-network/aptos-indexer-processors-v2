@@ -163,8 +163,7 @@ pub async fn parse_stake_data(
                             query_retries,
                             query_retry_delay_ms,
                         )
-                        .await
-                        .unwrap()
+                        .await?
                     {
                         all_current_delegated_voter.insert(voter.pk(), voter);
                     }
