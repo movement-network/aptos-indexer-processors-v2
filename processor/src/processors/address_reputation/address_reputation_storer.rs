@@ -22,6 +22,7 @@ use diesel::{
     sql_types::{BigInt, Integer, Numeric, Text, Varchar},
 };
 use diesel_async::{scoped_futures::ScopedFutureExt, AsyncConnection, RunQueryDsl};
+use std::collections::HashSet;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info};
 
@@ -111,7 +112,15 @@ impl Processable for AddressReputationStorer {
             let edges = edges;
             let inflows = inflows;
             async move {
-                if !edges.is_empty() {
+                // ON CONFLICT DO NOTHING RETURNING only yields rows that were
+                // actually inserted. Default processor_mode resumes at
+                // `last_success_version` (inclusive) and crash recovery replays
+                // from the last persisted checkpoint, so the same edges are
+                // re-extracted. Edge/inflow inserts are idempotent; the
+                // address_evm_sources upserts ADD funds and are not. Applying
+                // the rollup only to newly inserted edges keeps replay from
+                // double-counting evm_fund / transfer_fund.
+                let newly_inserted: HashSet<(i64, i64)> = if !edges.is_empty() {
                     diesel::insert_into(schema::address_transfer_edges::table)
                         .values(&edges)
                         .on_conflict((
@@ -119,13 +128,21 @@ impl Processable for AddressReputationStorer {
                             schema::address_transfer_edges::event_index,
                         ))
                         .do_nothing()
-                        .execute(conn)
+                        .returning((
+                            schema::address_transfer_edges::transaction_version,
+                            schema::address_transfer_edges::event_index,
+                        ))
+                        .get_results::<(i64, i64)>(conn)
                         .await
                         .map_err(|e| ProcessorError::DBStoreError {
                             message: format!("Failed to insert transfer edges: {e:?}"),
                             query: None,
-                        })?;
-                }
+                        })?
+                        .into_iter()
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
 
                 if !inflows.is_empty() {
                     diesel::insert_into(schema::bridge_inflows::table)
@@ -148,6 +165,9 @@ impl Processable for AddressReputationStorer {
                 }
 
                 for edge in &edges {
+                    if !should_apply_evm_rollup(edge, &newly_inserted) {
+                        continue;
+                    }
                     let Some(asset) = edge.asset_type.as_deref() else {
                         continue;
                     };
@@ -219,6 +239,15 @@ impl Processable for AddressReputationStorer {
 /// realistic per-txn event count (millions).
 pub fn seen_ord(version: i64, event_index: i64) -> i64 {
     (version << 24) | (event_index & 0x00FF_FFFF)
+}
+
+/// Whether this edge should drive an `address_evm_sources` rollup.
+///
+/// Only edges that were newly inserted in this batch (the RETURNING set of
+/// `ON CONFLICT DO NOTHING`) may add funds. Replay of an already-stored edge
+/// must be a no-op so inclusive checkpoint resume cannot double-count.
+pub fn should_apply_evm_rollup(edge: &TransferEdge, newly_inserted: &HashSet<(i64, i64)>) -> bool {
+    newly_inserted.contains(&(edge.transaction_version, edge.event_index))
 }
 
 impl AsyncStep for AddressReputationStorer {}
@@ -337,4 +366,52 @@ async fn propagate_evm_sources(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn edge(version: i64, event_index: i64) -> TransferEdge {
+        TransferEdge {
+            transaction_version: version,
+            event_index,
+            from_address: "0x1".to_string(),
+            to_address: "0x2".to_string(),
+            asset_type: Some("0xaaa".to_string()),
+            amount: BigDecimal::from_str("10").unwrap(),
+            is_bridge_inflow: false,
+            bridge_name: None,
+            transaction_timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                .unwrap()
+                .naive_utc(),
+        }
+    }
+
+    #[test]
+    fn rollup_applies_only_to_newly_inserted_edges() {
+        let replayed = edge(100, 0);
+        let fresh = edge(101, 0);
+        let newly_inserted = HashSet::from([(101, 0)]);
+
+        assert!(
+            !should_apply_evm_rollup(&replayed, &newly_inserted),
+            "inclusive checkpoint resume re-extracts last_success_version; that edge must not add funds again"
+        );
+        assert!(
+            should_apply_evm_rollup(&fresh, &newly_inserted),
+            "a newly inserted edge must still drive the rollup"
+        );
+        assert!(
+            !should_apply_evm_rollup(&fresh, &HashSet::new()),
+            "empty RETURNING set (full-batch replay) must apply no rollups"
+        );
+    }
+
+    #[test]
+    fn seen_ord_is_monotone_in_version_and_event_index() {
+        assert!(seen_ord(1, 0) < seen_ord(1, 1));
+        assert!(seen_ord(1, 1) < seen_ord(2, 0));
+    }
 }
