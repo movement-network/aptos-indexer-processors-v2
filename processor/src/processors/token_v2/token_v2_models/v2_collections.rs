@@ -21,7 +21,6 @@ use crate::{
     schema::{collections_v2, current_collections_v2},
 };
 use allocative_derive::Allocative;
-use anyhow::Context;
 use aptos_indexer_processor_sdk::{
     aptos_protos::transaction::v1::{WriteResource, WriteTableItem},
     postgres::utils::database::{DbContext, DbPoolConnection},
@@ -235,23 +234,23 @@ impl CollectionV2 {
                         DEFAULT_CREATOR_ADDRESS.to_string()
                     },
                     Some(db_context) => {
-                        match Self::get_collection_creator_for_v1(
-                            &mut db_context.conn,
+                        // NotFound (backfill hole / race after retries) is
+                        // Ok(None) and skips this write. Transient errors
+                        // propagate so the batch fails and the checkpoint
+                        // does not advance.
+                        match apply_collection_creator_lookup(
+                            Self::get_collection_creator_for_v1(
+                                &mut db_context.conn,
+                                &table_handle,
+                                db_context.query_retries,
+                                db_context.query_retry_delay_ms,
+                            )
+                            .await,
+                            txn_version,
                             &table_handle,
-                            db_context.query_retries,
-                            db_context.query_retry_delay_ms,
-                        )
-                        .await
-                        {
-                            Ok(ca) => ca,
-                            Err(_) => {
-                                tracing::warn!(
-                                        transaction_version = txn_version,
-                                        lookup_key = &table_handle,
-                                        "Failed to get collection creator for table handle {table_handle}, txn version {txn_version}. You probably should backfill db."
-                                    );
-                                return Ok(None);
-                            },
+                        )? {
+                            Some(ca) => ca,
+                            None => return Ok(None),
                         }
                     },
                 },
@@ -308,18 +307,25 @@ impl CollectionV2 {
     /// If collection data is not in resources of the same transaction, then try looking for it in the database. Since collection owner
     /// cannot change, we can just look in the current_collection_datas table.
     /// Retrying a few times since this collection could've been written in a separate thread.
+    ///
+    /// `Ok(None)` is only Diesel `NotFound` after retries (creator never
+    /// indexed, or empty/null query rows). Any other exhausted error is `Err`
+    /// so a transient failure cannot skip a v1 collection write while the
+    /// checkpoint advances.
     async fn get_collection_creator_for_v1(
         conn: &mut DbPoolConnection<'_>,
         table_handle: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Option<String>> {
         let mut tried = 0;
+        let mut last_err = None;
         while tried < query_retries {
             tried += 1;
             match Self::get_by_table_handle(conn, table_handle).await {
-                Ok(creator) => return Ok(creator),
-                Err(_) => {
+                Ok(creator) => return Ok(Some(creator)),
+                Err(e) => {
+                    last_err = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -327,25 +333,86 @@ impl CollectionV2 {
                 },
             }
         }
-        Err(anyhow::anyhow!("Failed to get collection creator"))
+        match last_err {
+            Some(e) => creator_from_exhausted_collection_lookup(e),
+            None => Err(anyhow::anyhow!(
+                "Failed to get collection creator: no lookup attempts (query_retries = 0)"
+            )),
+        }
     }
 
     /// TODO: Change this to a KV store
     async fn get_by_table_handle(
         conn: &mut DbPoolConnection<'_>,
         table_handle: &str,
-    ) -> anyhow::Result<String> {
-        let mut res: Vec<Option<CreatorFromCollectionTableV1>> = sql_query(
+    ) -> diesel::QueryResult<String> {
+        let res: Vec<Option<CreatorFromCollectionTableV1>> = sql_query(
             "SELECT creator_address FROM current_collections_v2 WHERE table_handle_v1 = $1",
         )
         .bind::<Text, _>(table_handle)
         .get_results(conn)
         .await?;
-        Ok(res
-            .pop()
-            .context("collection result empty")?
-            .context("collection result null")?
-            .creator_address)
+        creator_from_query_rows(res)
+    }
+}
+
+/// Map `get_results` rows to a creator address.
+///
+/// This query uses `get_results`, so a missing row is `Ok([])` rather than
+/// Diesel `NotFound`. Empty and null rows are intentional absence (backfill
+/// hole). A later `first()`-style `NotFound` classification can then skip.
+pub(crate) fn creator_from_query_rows(
+    mut res: Vec<Option<CreatorFromCollectionTableV1>>,
+) -> diesel::QueryResult<String> {
+    match res.pop() {
+        Some(Some(row)) => Ok(row.creator_address),
+        Some(None) | None => Err(diesel::result::Error::NotFound),
+    }
+}
+
+/// Classify a table-handle → creator-address lookup after retries are exhausted.
+///
+/// `NotFound` is a backfill hole: skip this v1 collection write. Any other
+/// error (connection, timeout, deserialization) must propagate. The old path
+/// mapped every `Err` to `Ok(None)` and skipped the write while the batch
+/// still succeeded, so a transient failure permanently dropped the row and
+/// `VersionTrackerStep` still advanced the checkpoint.
+pub(crate) fn creator_from_exhausted_collection_lookup(
+    err: diesel::result::Error,
+) -> anyhow::Result<Option<String>> {
+    match err {
+        diesel::result::Error::NotFound => Ok(None),
+        other => Err(anyhow::anyhow!(
+            "Failed to get collection creator for table handle: {other}"
+        )),
+    }
+}
+
+/// Apply a classified creator lookup to a v1 collection write.
+///
+/// * `Ok(Some(addr))` — persist the row
+/// * `Ok(None)` — backfill hole; skip this write-set change
+/// * `Err(_)` — propagate so `parse_v2_token` fails and `TokenV2Extractor`
+///   returns `ProcessorError` (checkpoint does not advance)
+///
+/// The old write path mapped every lookup `Err` onto `Ok(None)`, which is the
+/// same signal as "this table item is not collection data".
+pub(crate) fn apply_collection_creator_lookup(
+    lookup: anyhow::Result<Option<String>>,
+    txn_version: i64,
+    table_handle: &str,
+) -> anyhow::Result<Option<String>> {
+    match lookup {
+        Ok(Some(creator)) => Ok(Some(creator)),
+        Ok(None) => {
+            tracing::warn!(
+                transaction_version = txn_version,
+                lookup_key = table_handle,
+                "Failed to get collection creator for table handle {table_handle}, txn version {txn_version}. You probably should backfill db."
+            );
+            Ok(None)
+        },
+        Err(e) => Err(e),
     }
 }
 
@@ -403,5 +470,108 @@ impl From<CollectionV2> for ParquetCollectionV2 {
             token_standard: collection.token_standard,
             block_timestamp: collection.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_collection_creator_lookup, creator_from_exhausted_collection_lookup,
+        creator_from_query_rows, CreatorFromCollectionTableV1,
+    };
+    use diesel::result::Error;
+
+    #[test]
+    fn empty_query_rows_are_not_found() {
+        assert!(matches!(
+            creator_from_query_rows(vec![]),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
+    fn null_query_row_is_not_found() {
+        assert!(matches!(
+            creator_from_query_rows(vec![None]),
+            Err(Error::NotFound)
+        ));
+    }
+
+    #[test]
+    fn query_row_keeps_creator() {
+        let creator = creator_from_query_rows(vec![Some(CreatorFromCollectionTableV1 {
+            creator_address: "0xcreator".to_string(),
+        })])
+        .unwrap();
+        assert_eq!(creator, "0xcreator");
+    }
+
+    #[test]
+    fn not_found_skips_write() {
+        assert_eq!(
+            creator_from_exhausted_collection_lookup(Error::NotFound).unwrap(),
+            None
+        );
+        assert_eq!(
+            apply_collection_creator_lookup(
+                creator_from_exhausted_collection_lookup(Error::NotFound),
+                42,
+                "0xhandle",
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn connection_error_is_not_ok_none_skip() {
+        let err = Error::DeserializationError("connection reset".into());
+        let result = creator_from_exhausted_collection_lookup(err);
+        assert!(
+            result.is_err(),
+            "lookup failure must not look like a missing collection creator"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("collection creator"),
+            "error should name the collection-creator lookup, got: {message}"
+        );
+        assert!(
+            !message.contains("NotFound"),
+            "transient error must not be classified as NotFound"
+        );
+    }
+
+    #[test]
+    fn query_builder_error_is_not_ok_none_skip() {
+        let err = Error::QueryBuilderError("broken connection".into());
+        assert!(creator_from_exhausted_collection_lookup(err).is_err());
+    }
+
+    /// `get_v1_from_write_table_item` used to map every lookup error to
+    /// `Ok(None)`. That is the same success signal as "this table item is not
+    /// collection data", so `parse_v2_token` still returned the batch and
+    /// `TokenV2Extractor` let `VersionTrackerStep` advance the checkpoint.
+    ///
+    /// The write path now uses `apply_collection_creator_lookup`: only
+    /// `Ok(None)` skips; `Err` stays `Err`.
+    #[test]
+    fn write_path_does_not_map_lookup_err_to_ok_none() {
+        let lookup_err = creator_from_exhausted_collection_lookup(Error::QueryBuilderError(
+            "connection timeout".into(),
+        ));
+        let write_result = apply_collection_creator_lookup(lookup_err, 99, "0xcollections");
+        assert!(
+            write_result.is_err(),
+            "transient lookup failure must fail the write, not skip the collection row"
+        );
+    }
+
+    #[test]
+    fn resolved_creator_is_kept() {
+        let creator =
+            apply_collection_creator_lookup(Ok(Some("0xcreator".to_string())), 1, "0xhandle")
+                .unwrap();
+        assert_eq!(creator.as_deref(), Some("0xcreator"));
     }
 }

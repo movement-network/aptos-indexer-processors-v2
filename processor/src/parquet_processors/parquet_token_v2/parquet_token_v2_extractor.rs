@@ -66,7 +66,14 @@ impl Processable for ParquetTokenV2Extractor {
             raw_current_token_v2_metadata,
             raw_current_token_royalties_v1,
             raw_current_token_claims,
-        ) = parse_v2_token(&transactions.data, &table_handle_to_owner, &mut None).await;
+        ) = match parse_v2_token(&transactions.data, &table_handle_to_owner, &mut None).await {
+            Ok(data) => data,
+            Err(e) => {
+                return Err(ProcessorError::ProcessError {
+                    message: format!("Error parsing token v2 data: {e:?}"),
+                });
+            },
+        };
 
         let parquet_current_token_claims: Vec<ParquetCurrentTokenPendingClaim> =
             raw_current_token_claims

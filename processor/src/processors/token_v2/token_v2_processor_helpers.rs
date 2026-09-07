@@ -46,7 +46,7 @@ pub async fn parse_v2_token(
     transactions: &[Transaction],
     table_handle_to_owner: &TableHandleToOwner,
     db_context: &mut Option<DbContext<'_>>,
-) -> (
+) -> anyhow::Result<(
     Vec<CollectionV2>,
     Vec<TokenDataV2>,
     Vec<TokenOwnershipV2>,
@@ -59,7 +59,7 @@ pub async fn parse_v2_token(
     Vec<CurrentTokenV2Metadata>,
     Vec<CurrentTokenRoyaltyV1>,
     Vec<CurrentTokenPendingClaim>,
-) {
+)> {
     // Token V2 and V1 combined
     let mut collections_v2 = vec![];
     let mut token_datas_v2 = vec![];
@@ -288,8 +288,7 @@ pub async fn parse_v2_token(
                                 table_handle_to_owner,
                                 db_context,
                             )
-                            .await
-                            .unwrap()
+                            .await?
                         {
                             collections_v2.push(collection);
                             current_collections_v2.insert(
@@ -657,7 +656,7 @@ pub async fn parse_v2_token(
     current_token_royalties_v1.sort();
     all_current_token_claims.sort();
 
-    (
+    Ok((
         collections_v2,
         token_datas_v2,
         token_ownerships_v2,
@@ -670,5 +669,5 @@ pub async fn parse_v2_token(
         current_token_v2_metadata,
         current_token_royalties_v1,
         all_current_token_claims,
-    )
+    ))
 }

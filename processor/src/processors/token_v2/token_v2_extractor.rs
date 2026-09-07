@@ -18,6 +18,7 @@ use aptos_indexer_processor_sdk::{
     utils::errors::ProcessorError,
 };
 use async_trait::async_trait;
+use tracing::error;
 
 /// Extracts fungible asset events, metadata, balances, and v1 supply from transactions
 pub struct TokenV2Extractor
@@ -106,12 +107,27 @@ impl Processable for TokenV2Extractor {
             _,
             raw_current_token_royalties_v1,
             raw_current_token_claims,
-        ) = parse_v2_token(
+        ) = match parse_v2_token(
             &transactions.data,
             &table_handle_to_owner,
             &mut Some(db_connection),
         )
-        .await;
+        .await
+        {
+            Ok(data) => data,
+            Err(e) => {
+                error!(
+                    start_version = transactions.metadata.start_version,
+                    end_version = transactions.metadata.end_version,
+                    processor_name = self.name(),
+                    error = ?e,
+                    "[Parser] Error parsing token v2 data",
+                );
+                return Err(ProcessorError::ProcessError {
+                    message: format!("Error parsing token v2 data: {e:?}"),
+                });
+            },
+        };
 
         let postgres_current_token_claims: Vec<PostgresCurrentTokenPendingClaim> =
             raw_current_token_claims
