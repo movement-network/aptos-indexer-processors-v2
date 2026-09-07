@@ -15,5 +15,20 @@
     ],
     "public_key_type": "keyless",
     "any_signature_type": "keyless"
+  },
+  {
+    "transaction_version": 1803170308,
+    "multi_agent_index": 0,
+    "multi_sig_index": 0,
+    "transaction_block_height": 239859401,
+    "signer": "0xf64be4e22ec7371e3f5e9c750ed132bb72548fc283c5ec0fa3acefd81f62a147",
+    "is_sender_primary": false,
+    "type_": "ed25519_signature",
+    "public_key": "0x74700b4c1fb40b2162dd4a7cb8e3c6c228b0924f256e83a3c86994c24905a551",
+    "signature": "0x8c0a4027937d6484fd98a41355f97905daddf355221270acb2467538745c930a61fbecabc1ee1d60da7cb2946652528e0ef36bd1cb0b3051ffde4730b0bb7205",
+    "threshold": 1,
+    "public_key_indices": [],
+    "public_key_type": null,
+    "any_signature_type": null
   }
 ]

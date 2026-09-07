@@ -167,3 +167,78 @@ impl From<AccountTransaction> for PostgresAccountTransaction {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::{
+        transaction::v1::{
+            account_signature::{
+                Signature as AccountSignatureEnum, Type as AccountSignatureTypeEnum,
+            },
+            signature::{Signature as SignatureEnum, Type as SignatureTypeEnum},
+            transaction::TxnData,
+            AccountSignature, Ed25519Signature, FeePayerSignature, Signature as SignaturePb,
+            TransactionInfo, UserTransaction, UserTransactionRequest,
+        },
+        util::timestamp::Timestamp,
+    };
+
+    fn ed25519_account_signature(seed: u8) -> AccountSignature {
+        AccountSignature {
+            r#type: AccountSignatureTypeEnum::Ed25519 as i32,
+            signature: Some(AccountSignatureEnum::Ed25519(Ed25519Signature {
+                public_key: vec![seed; 32],
+                signature: vec![seed.wrapping_add(1); 64],
+            })),
+        }
+    }
+
+    fn sponsored_user_txn(sender: &str, fee_payer: &str) -> Transaction {
+        Transaction {
+            version: 99,
+            block_height: 1,
+            timestamp: Some(Timestamp {
+                seconds: 1,
+                nanos: 0,
+            }),
+            info: Some(TransactionInfo {
+                success: true,
+                ..Default::default()
+            }),
+            txn_data: Some(TxnData::User(UserTransaction {
+                request: Some(UserTransactionRequest {
+                    sender: sender.to_string(),
+                    signature: Some(SignaturePb {
+                        r#type: SignatureTypeEnum::FeePayer as i32,
+                        signature: Some(SignatureEnum::FeePayer(FeePayerSignature {
+                            sender: Some(ed25519_account_signature(1)),
+                            secondary_signer_addresses: vec![],
+                            secondary_signers: vec![],
+                            fee_payer_address: fee_payer.to_string(),
+                            fee_payer_signer: Some(ed25519_account_signature(2)),
+                        })),
+                    }),
+                    ..Default::default()
+                }),
+                events: vec![],
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn get_accounts_includes_fee_payer_when_write_set_is_empty() {
+        let sender = "0x1";
+        let fee_payer = "0x2";
+        let accounts = AccountTransaction::get_accounts(&sponsored_user_txn(sender, fee_payer));
+        assert!(
+            accounts.contains(&standardize_address(sender)),
+            "sender missing: {accounts:?}"
+        );
+        assert!(
+            accounts.contains(&standardize_address(fee_payer)),
+            "fee payer missing from account_transactions when only the signature carries them: {accounts:?}"
+        );
+    }
+}
