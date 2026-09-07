@@ -153,13 +153,11 @@ impl Processable for AddressReputationStorer {
                     };
                     let ord = seen_ord(edge.transaction_version, edge.event_index);
                     if edge.is_bridge_inflow {
-                        let evm = inflows
-                            .iter()
-                            .find(|bi| {
-                                bi.transaction_version == edge.transaction_version
-                                    && bi.aptos_recipient == edge.to_address
-                                    && bi.amount == edge.amount
-                            })
+                        // Seed only the synthetic head (same event_index as the
+                        // inflow). A paired Withdraw+Deposit can also be marked
+                        // is_bridge_inflow so it skips hop propagation, but it
+                        // must not add the same amount a second time.
+                        let evm = inflow_for_bridge_seed(edge, &inflows)
                             .and_then(|bi| bi.evm_source.clone());
                         if let Some(evm) = evm {
                             upsert_bridge_seed(
@@ -219,6 +217,21 @@ impl Processable for AddressReputationStorer {
 /// realistic per-txn event count (millions).
 pub fn seen_ord(version: i64, event_index: i64) -> i64 {
     (version << 24) | (event_index & 0x00FF_FFFF)
+}
+
+/// The synthetic head-injection edge uses the inflow's `event_index`. A paired
+/// FA Withdraw+Deposit that delivered the same tokens is a different event and
+/// must not match — `upsert_bridge_seed` adds `evm_fund`.
+pub fn inflow_for_bridge_seed<'a>(
+    edge: &TransferEdge,
+    inflows: &'a [BridgeInflow],
+) -> Option<&'a BridgeInflow> {
+    inflows.iter().find(|bi| {
+        bi.transaction_version == edge.transaction_version
+            && bi.event_index == edge.event_index
+            && bi.aptos_recipient == edge.to_address
+            && bi.amount == edge.amount
+    })
 }
 
 impl AsyncStep for AddressReputationStorer {}
@@ -337,4 +350,77 @@ async fn propagate_evm_sources(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inflow_for_bridge_seed;
+    use crate::processors::address_reputation::address_reputation_model::{
+        BridgeInflow, TransferEdge,
+    };
+    use bigdecimal::BigDecimal;
+
+    fn ts() -> chrono::NaiveDateTime {
+        chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc()
+    }
+
+    fn edge(event_index: i64, to: &str, amount: u64) -> TransferEdge {
+        TransferEdge {
+            transaction_version: 100,
+            event_index,
+            from_address: "0xfrom".to_string(),
+            to_address: to.to_string(),
+            asset_type: Some("0xasset".to_string()),
+            amount: BigDecimal::from(amount),
+            is_bridge_inflow: true,
+            bridge_name: Some("circle_usdcx".to_string()),
+            transaction_timestamp: ts(),
+        }
+    }
+
+    fn inflow(event_index: i64, to: &str, amount: u64) -> BridgeInflow {
+        BridgeInflow {
+            transaction_version: 100,
+            event_index,
+            bridge_name: "circle_usdcx".to_string(),
+            aptos_recipient: to.to_string(),
+            evm_source: Some("0xevm".to_string()),
+            src_chain_id: Some(1),
+            asset_type: Some("0xasset".to_string()),
+            amount: BigDecimal::from(amount),
+            lz_guid: None,
+            transaction_timestamp: ts(),
+        }
+    }
+
+    #[test]
+    fn synthetic_head_edge_matches_inflow() {
+        let bi = inflow(2, "0xrecipient", 50);
+        let synthetic = edge(2, "0xrecipient", 50);
+        assert!(inflow_for_bridge_seed(&synthetic, &[bi]).is_some());
+    }
+
+    #[test]
+    fn paired_withdraw_edge_does_not_match_inflow() {
+        // Withdraw is event 0; the registered bridge event (and synthetic
+        // head) is event 2. Same recipient and amount is not enough.
+        let bi = inflow(2, "0xrecipient", 50);
+        let paired = edge(0, "0xrecipient", 50);
+        assert!(inflow_for_bridge_seed(&paired, &[bi]).is_none());
+    }
+
+    #[test]
+    fn paired_plus_synthetic_seed_only_once() {
+        let inflows = vec![inflow(2, "0xrecipient", 50)];
+        let paired = edge(0, "0xrecipient", 50);
+        let synthetic = edge(2, "0xrecipient", 50);
+        let seeds: Vec<_> = [&paired, &synthetic]
+            .into_iter()
+            .filter_map(|e| inflow_for_bridge_seed(e, &inflows))
+            .collect();
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].event_index, 2);
+    }
 }
