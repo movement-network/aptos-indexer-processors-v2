@@ -43,6 +43,9 @@ impl Processable for ParquetStakeExtractor {
         &mut self,
         transactions: TransactionContext<Self::Input>,
     ) -> anyhow::Result<Option<TransactionContext<ParquetTypeMap>>, ProcessorError> {
+        // No DB connection: active-share (and in-batch inactive-share) balances
+        // still parse. Inactive-share fallbacks that need current_delegator_balances
+        // are skipped rather than dropping every delegator-balance row.
         let (
             _,
             raw_all_proposal_votes,
