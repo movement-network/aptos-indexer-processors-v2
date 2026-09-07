@@ -63,9 +63,13 @@ impl AccountTransaction {
             .as_ref()
             .unwrap_or_else(|| panic!("Transaction info doesn't exist for version {txn_version}"));
         let wscs = &transaction_info.changes;
+        // Events/signatures are type-specific. Write-set resource accounts are not:
+        // BlockEpilogue (and StateCheckpoint) still carry WriteResource changes
+        // (e.g. 0x1::block::BlockResource). Returning here used to drop those
+        // accounts from account_transactions entirely.
         let (events, signatures) = match txn_data {
             TxnData::User(inner) => (
-                &inner.events,
+                inner.events.as_slice(),
                 UserTransaction::get_signatures(
                     inner.request.as_ref().unwrap_or_else(|| {
                         panic!("User request doesn't exist for version {txn_version}")
@@ -76,12 +80,10 @@ impl AccountTransaction {
                         .naive_utc(),
                 ),
             ),
-            TxnData::Genesis(inner) => (&inner.events, vec![]),
-            TxnData::BlockMetadata(inner) => (&inner.events, vec![]),
-            TxnData::Validator(inner) => (&inner.events, vec![]),
-            _ => {
-                return AHashSet::new();
-            },
+            TxnData::Genesis(inner) => (inner.events.as_slice(), vec![]),
+            TxnData::BlockMetadata(inner) => (inner.events.as_slice(), vec![]),
+            TxnData::Validator(inner) => (inner.events.as_slice(), vec![]),
+            _ => (&[] as &[_], vec![]),
         };
         let mut accounts = AHashSet::new();
         for sig in signatures {
@@ -165,5 +167,71 @@ impl From<AccountTransaction> for PostgresAccountTransaction {
             transaction_version: acc_txn.transaction_version,
             account_address: acc_txn.account_address,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::{
+        transaction::v1::{
+            transaction::TransactionType, write_set_change::Change, BlockEpilogueTransaction,
+            MoveStructTag, TransactionInfo, WriteResource, WriteSetChange,
+        },
+        util::timestamp::Timestamp,
+    };
+
+    fn epilogue_txn_with_write_resource(address: &str) -> Transaction {
+        Transaction {
+            timestamp: Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            version: 7_250_088_688,
+            info: Some(TransactionInfo {
+                hash: vec![0u8; 32],
+                state_change_hash: vec![0u8; 32],
+                event_root_hash: vec![0u8; 32],
+                state_checkpoint_hash: None,
+                gas_used: 0,
+                success: true,
+                vm_status: String::new(),
+                accumulator_root_hash: vec![0u8; 32],
+                changes: vec![WriteSetChange {
+                    r#type: 0,
+                    change: Some(Change::WriteResource(WriteResource {
+                        address: address.to_string(),
+                        state_key_hash: vec![0u8; 32],
+                        r#type: Some(MoveStructTag {
+                            address: "0x1".to_string(),
+                            module: "block".to_string(),
+                            name: "BlockResource".to_string(),
+                            generic_type_params: vec![],
+                        }),
+                        type_str: "0x1::block::BlockResource".to_string(),
+                        data: r#"{"epoch_interval":"1","height":"1"}"#.to_string(),
+                    })),
+                }],
+            }),
+            epoch: 1,
+            block_height: 1,
+            r#type: TransactionType::BlockEpilogue as i32,
+            size_info: None,
+            txn_data: Some(TxnData::BlockEpilogue(BlockEpilogueTransaction {
+                block_end_info: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn block_epilogue_indexes_write_set_accounts() {
+        let txn = epilogue_txn_with_write_resource("0x1");
+        let accounts = AccountTransaction::get_accounts(&txn);
+
+        assert!(
+            accounts.contains("0x0000000000000000000000000000000000000000000000000000000000000001"),
+            "BlockEpilogue WriteResource accounts must be indexed; got {accounts:?}"
+        );
+        assert_eq!(accounts.len(), 1);
     }
 }
