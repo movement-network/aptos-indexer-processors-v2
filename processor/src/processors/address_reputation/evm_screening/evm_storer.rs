@@ -1,4 +1,5 @@
 use super::{super::address_reputation_model::EvmRiskScore, lz_enricher::EVM_NULL_SENTINEL};
+use anyhow::Context;
 use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
 use async_trait::async_trait;
 use diesel::{
@@ -25,7 +26,12 @@ pub struct EvmRow {
 pub trait EvmScreeningDb: Send + Sync + 'static {
     async fn save(&self, score: &EvmRiskScore) -> anyhow::Result<()>;
     async fn is_fresh_in_db(&self, evm: &str) -> bool;
-    async fn load_pending_evms(&self) -> VecDeque<String>;
+    /// Return EVM addresses that still need screening (startup / reconnect seed).
+    ///
+    /// Must return `Err` on connection or query failure. Callers retry; they
+    /// must not treat a failed load as an empty queue (that drops pending
+    /// addresses until the next successful reconnect or process restart).
+    async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>>;
 }
 
 /// Production implementation backed by PostgreSQL.
@@ -80,19 +86,16 @@ impl EvmScreeningDb for DbScoreSaver {
         .unwrap_or(false)
     }
 
-    async fn load_pending_evms(&self) -> VecDeque<String> {
+    async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>> {
         let pool = match self.pool.as_ref() {
             Some(p) => p,
-            None => return VecDeque::new(),
+            None => return Ok(VecDeque::new()),
         };
-        let mut conn = match pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(err = ?e, "evm_fetch_loop: failed to get DB connection for EVM seed");
-                return VecDeque::new();
-            },
-        };
-        match sql_query(
+        let mut conn = pool
+            .get()
+            .await
+            .context("evm_fetch_loop: failed to get DB connection for EVM seed")?;
+        let rows = sql_query(
             "SELECT DISTINCT bi.evm_source \
                FROM bridge_inflows bi \
               WHERE bi.evm_source IS NOT NULL \
@@ -110,11 +113,29 @@ impl EvmScreeningDb for DbScoreSaver {
         .bind::<Varchar, _>(EVM_NULL_SENTINEL)
         .get_results::<EvmRow>(&mut conn)
         .await
-        {
-            Ok(rows) => rows.into_iter().map(|r| r.evm_source).collect(),
+        .context("evm_fetch_loop: failed to load pending EVMs")?;
+        Ok(rows.into_iter().map(|r| r.evm_source).collect())
+    }
+}
+
+/// Retry `load_pending_evms` until the store answers. A failed query used to
+/// return an empty queue, which dropped every pending EVM until the next
+/// successful reconnect or process restart. An empty `Ok` is still valid
+/// (nothing pending).
+pub(crate) async fn load_pending_evms_retrying(
+    db: &dyn EvmScreeningDb,
+    retry_delay: Duration,
+) -> VecDeque<String> {
+    loop {
+        match db.load_pending_evms().await {
+            Ok(q) => return q,
             Err(e) => {
-                tracing::error!(err = ?e, "evm_fetch_loop: failed to load pending EVMs; starting empty");
-                VecDeque::new()
+                tracing::error!(
+                    err = %e,
+                    retry_secs = retry_delay.as_secs_f64(),
+                    "evm_fetch_loop: failed to load pending EVMs; retrying"
+                );
+                tokio::time::sleep(retry_delay).await;
             },
         }
     }
@@ -150,4 +171,86 @@ async fn save_risk_score(pool: &ArcDbPool, score: &EvmRiskScore) -> anyhow::Resu
     .execute(&mut conn)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+
+    struct FailDb;
+
+    #[async_trait]
+    impl EvmScreeningDb for FailDb {
+        async fn save(&self, _score: &EvmRiskScore) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+            false
+        }
+
+        async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>> {
+            Err(anyhow::anyhow!("db down"))
+        }
+    }
+
+    struct FailThenOk {
+        remaining_failures: AtomicU32,
+        evms: Vec<String>,
+    }
+
+    #[async_trait]
+    impl EvmScreeningDb for FailThenOk {
+        async fn save(&self, _score: &EvmRiskScore) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn is_fresh_in_db(&self, _evm: &str) -> bool {
+            false
+        }
+
+        async fn load_pending_evms(&self) -> anyhow::Result<VecDeque<String>> {
+            let left = self.remaining_failures.fetch_sub(1, Ordering::SeqCst);
+            if left > 0 {
+                Err(anyhow::anyhow!("transient db error"))
+            } else {
+                Ok(self.evms.iter().cloned().collect())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn load_pending_evms_error_is_not_empty_success() {
+        let db: Arc<dyn EvmScreeningDb> = Arc::new(FailDb);
+        assert!(
+            db.load_pending_evms().await.is_err(),
+            "a failed load must surface as Err, not an empty queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_pending_evms_retries_until_success() {
+        let pending = "0x5e87d7e75b272fb7150b4d1a05afb6bd71474950";
+        let db = FailThenOk {
+            remaining_failures: AtomicU32::new(2),
+            evms: vec![pending.to_string()],
+        };
+        let queue = load_pending_evms_retrying(&db, Duration::from_millis(1)).await;
+        assert_eq!(queue, VecDeque::from([pending.to_string()]));
+    }
+
+    #[tokio::test]
+    async fn load_pending_evms_empty_ok_is_valid() {
+        let db = FailThenOk {
+            remaining_failures: AtomicU32::new(0),
+            evms: vec![],
+        };
+        let queue = load_pending_evms_retrying(&db, Duration::from_millis(1)).await;
+        assert!(queue.is_empty());
+    }
 }
