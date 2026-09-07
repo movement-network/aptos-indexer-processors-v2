@@ -25,8 +25,9 @@ fi
 set -e
 set -x
 
-# Clippy uses rust-toolchain.toml (1.85). Nightly clippy cannot compile
-# allocative 0.3.x after Infallible was aliased to ! (E0119).
+# Run clippy on the pinned STABLE toolchain (from rust-toolchain.toml), NOT
+# nightly. Latest nightly makes Infallible an alias of !, which breaks
+# allocative (impl Allocative for both). Stable clippy matches the build toolchain.
 cargo xclippy
 
 # We require the nightly build of cargo fmt
