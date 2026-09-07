@@ -279,7 +279,13 @@ impl TokenActivityV2 {
                         to_address: None,
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_withdrawn.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_withdrawn.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            inner.id.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
                 TokenEvent::DepositTokenEvent(inner) => TokenActivityHelperV1 {
@@ -298,7 +304,13 @@ impl TokenActivityV2 {
                         to_address: Some(inner.get_account()),
                         token_amount: inner.amount.clone(),
                     };
-                    tokens_deposited.insert(token_data_id_struct.to_id(), helper.clone());
+                    tokens_deposited.insert(
+                        (
+                            token_data_id_struct.to_id(),
+                            inner.id.property_version.clone(),
+                        ),
+                        helper.clone(),
+                    );
                     helper
                 },
                 TokenEvent::OfferTokenEvent(inner) => TokenActivityHelperV1 {
