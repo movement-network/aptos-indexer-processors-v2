@@ -355,7 +355,7 @@ pub struct ParquetCurrentObject {
 }
 
 impl NamedTable for ParquetCurrentObject {
-    const TABLE_NAME: &'static str = "objects";
+    const TABLE_NAME: &'static str = "current_objects";
 }
 
 impl HasVersion for ParquetCurrentObject {
