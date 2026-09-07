@@ -58,7 +58,9 @@ impl LzDb for MockLzDb {
         VecDeque::new()
     }
 
-    async fn write_evm(&self, _guid: &str, _evm: &str) {}
+    async fn write_evm(&self, _guid: &str, _evm: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
