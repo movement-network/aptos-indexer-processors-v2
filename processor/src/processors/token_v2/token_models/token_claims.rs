@@ -24,11 +24,15 @@ use field_count::FieldCount;
 use parquet_derive::ParquetRecordWriter;
 use serde::{Deserialize, Serialize};
 
-// Map to keep track of the metadata of token offers that were claimed. The key is the token data id of the offer.
-pub type TokenV1Claimed = AHashMap<String, TokenActivityHelperV1>;
+/// (token_data_id, property_version). Token V1 offers of the same named token
+/// with different property versions are distinct `current_token_pending_claims` rows.
+pub type TokenV1OfferEventKey = (String, BigDecimal);
 
-// Map to keep track of the metadata of token offers that were canceled. The key is the token data id of the offer.
-pub type TokenV1Canceled = AHashMap<String, TokenActivityHelperV1>;
+// Map to keep track of the metadata of token offers that were claimed.
+pub type TokenV1Claimed = AHashMap<TokenV1OfferEventKey, TokenActivityHelperV1>;
+
+// Map to keep track of the metadata of token offers that were canceled.
+pub type TokenV1Canceled = AHashMap<TokenV1OfferEventKey, TokenActivityHelperV1>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CurrentTokenPendingClaim {
@@ -166,6 +170,10 @@ impl CurrentTokenPendingClaim {
         if let Some(offer) = &maybe_offer {
             let table_handle = standardize_address(&table_item.handle.to_string());
             let token_data_id = offer.token_id.token_data_id.to_id();
+            let offer_key = (
+                token_data_id.clone(),
+                offer.token_id.property_version.clone(),
+            );
 
             // Try to find owner from write resources
             let mut maybe_owner_address = table_handle_to_owner
@@ -174,10 +182,10 @@ impl CurrentTokenPendingClaim {
 
             // If table handle isn't in TableHandleToOwner, try to find owner from token v1 claim events
             if maybe_owner_address.is_none() {
-                if let Some(token_claimed) = tokens_claimed.get(&token_data_id) {
+                if let Some(token_claimed) = tokens_claimed.get(&offer_key) {
                     maybe_owner_address = token_claimed.from_address.clone();
                 }
-                if let Some(token_canceled) = tokens_canceled.get(&token_data_id) {
+                if let Some(token_canceled) = tokens_canceled.get(&offer_key) {
                     maybe_owner_address = token_canceled.from_address.clone();
                 }
             }
@@ -335,5 +343,201 @@ impl From<CurrentTokenPendingClaim> for PostgresCurrentTokenPendingClaim {
             token_data_id: raw_item.token_data_id,
             collection_id: raw_item.collection_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::token_v2::token_v2_models::v2_token_activities::TokenActivityV2;
+    use ahash::AHashMap;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        DeleteTableData, DeleteTableItem, Event, EventKey,
+    };
+    use bigdecimal::BigDecimal;
+
+    const ALICE: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+    const BOB: &str = "0x00000000000000000000000000000000000000000000000000000000000000bb";
+    const CAROL: &str = "0x00000000000000000000000000000000000000000000000000000000000000cc";
+    const ALICE_CLAIMS: &str = "0x0000000000000000000000000000000000000000000000000000000000000ca1";
+    const BOB_CLAIMS: &str = "0x0000000000000000000000000000000000000000000000000000000000000cb2";
+
+    fn ts() -> chrono::NaiveDateTime {
+        chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc()
+    }
+
+    fn token_id_json(property_version: u32) -> String {
+        format!(
+            r#"{{"token_data_id":{{"creator":"0x1","collection":"col","name":"tok"}},"property_version":"{property_version}"}}"#
+        )
+    }
+
+    fn claim_event(offerer: &str, to: &str, property_version: u32) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: offerer.to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: "0x3::token_transfers::Claim".to_string(),
+            data: format!(
+                r#"{{"amount":"1","account":"{offerer}","to_address":"{to}","token_id":{}}}"#,
+                token_id_json(property_version)
+            ),
+        }
+    }
+
+    fn cancel_event(offerer: &str, to: &str, property_version: u32) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: offerer.to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: "0x3::token_transfers::CancelOffer".to_string(),
+            data: format!(
+                r#"{{"amount":"1","account":"{offerer}","to_address":"{to}","token_id":{}}}"#,
+                token_id_json(property_version)
+            ),
+        }
+    }
+
+    fn delete_offer(handle: &str, to: &str, property_version: u32) -> DeleteTableItem {
+        let key = format!(
+            r#"{{"to_addr":"{to}","token_id":{}}}"#,
+            token_id_json(property_version)
+        );
+        DeleteTableItem {
+            state_key_hash: vec![],
+            handle: handle.to_string(),
+            key: key.clone(),
+            data: Some(DeleteTableData {
+                key,
+                key_type: "0x3::token_transfers::TokenOfferId".to_string(),
+            }),
+        }
+    }
+
+    fn parse_claim_events(events: &[Event]) -> (TokenV1Claimed, TokenV1Canceled) {
+        let mut tokens_claimed = AHashMap::new();
+        let mut tokens_canceled = AHashMap::new();
+        let mut withdrawn = AHashMap::new();
+        let mut deposited = AHashMap::new();
+        for (i, event) in events.iter().enumerate() {
+            TokenActivityV2::get_v1_from_parsed_event(
+                event,
+                1,
+                ts(),
+                i as i64,
+                &None,
+                &mut tokens_claimed,
+                &mut tokens_canceled,
+                &mut withdrawn,
+                &mut deposited,
+            )
+            .unwrap();
+        }
+        (tokens_claimed, tokens_canceled)
+    }
+
+    /// Two holders of the same named token (pv0 vs a mutated pv1) offer to the
+    /// same recipient. The recipient claims both in one txn. PendingClaims is
+    /// not rewritten, so from_address comes from the claim-event map.
+    ///
+    /// Keying that map only by token_data_id keeps the last event and writes
+    /// Alice's delete against Bob's PK (wrong-row update / silent skip of
+    /// Alice's pending-claim row).
+    #[test]
+    fn claim_fallback_does_not_reuse_offerer_across_property_versions() {
+        let (tokens_claimed, tokens_canceled) =
+            parse_claim_events(&[claim_event(ALICE, CAROL, 0), claim_event(BOB, CAROL, 1)]);
+
+        assert_eq!(
+            tokens_claimed.len(),
+            2,
+            "both property versions must be kept"
+        );
+
+        let alice_row = CurrentTokenPendingClaim::from_delete_table_item(
+            &delete_offer(ALICE_CLAIMS, CAROL, 0),
+            1,
+            ts(),
+            &AHashMap::new(),
+            &tokens_claimed,
+            &tokens_canceled,
+        )
+        .unwrap()
+        .expect("alice pv0 claim must resolve");
+        let bob_row = CurrentTokenPendingClaim::from_delete_table_item(
+            &delete_offer(BOB_CLAIMS, CAROL, 1),
+            1,
+            ts(),
+            &AHashMap::new(),
+            &tokens_claimed,
+            &tokens_canceled,
+        )
+        .unwrap()
+        .expect("bob pv1 claim must resolve");
+
+        assert_eq!(alice_row.from_address, ALICE);
+        assert_eq!(alice_row.to_address, CAROL);
+        assert_eq!(alice_row.property_version, BigDecimal::from(0));
+        assert_eq!(alice_row.amount, BigDecimal::zero());
+
+        assert_eq!(bob_row.from_address, BOB);
+        assert_eq!(bob_row.to_address, CAROL);
+        assert_eq!(bob_row.property_version, BigDecimal::from(1));
+        assert_eq!(bob_row.amount, BigDecimal::zero());
+
+        assert_ne!(
+            (
+                &alice_row.token_data_id_hash,
+                &alice_row.property_version,
+                &alice_row.from_address,
+                &alice_row.to_address
+            ),
+            (
+                &bob_row.token_data_id_hash,
+                &bob_row.property_version,
+                &bob_row.from_address,
+                &bob_row.to_address
+            ),
+            "pending-claim PKs must stay distinct"
+        );
+    }
+
+    /// Cancel of pv1 must not steal the offerer of a same-token_data_id pv0 claim.
+    #[test]
+    fn cancel_fallback_does_not_overwrite_other_property_version_claim() {
+        let (tokens_claimed, tokens_canceled) =
+            parse_claim_events(&[claim_event(ALICE, CAROL, 0), cancel_event(BOB, CAROL, 1)]);
+
+        let alice_row = CurrentTokenPendingClaim::from_delete_table_item(
+            &delete_offer(ALICE_CLAIMS, CAROL, 0),
+            1,
+            ts(),
+            &AHashMap::new(),
+            &tokens_claimed,
+            &tokens_canceled,
+        )
+        .unwrap()
+        .expect("alice pv0 claim must resolve");
+        let bob_row = CurrentTokenPendingClaim::from_delete_table_item(
+            &delete_offer(BOB_CLAIMS, CAROL, 1),
+            1,
+            ts(),
+            &AHashMap::new(),
+            &tokens_claimed,
+            &tokens_canceled,
+        )
+        .unwrap()
+        .expect("bob pv1 cancel must resolve");
+
+        assert_eq!(alice_row.from_address, ALICE);
+        assert_eq!(alice_row.property_version, BigDecimal::from(0));
+        assert_eq!(bob_row.from_address, BOB);
+        assert_eq!(bob_row.property_version, BigDecimal::from(1));
     }
 }
