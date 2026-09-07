@@ -5,6 +5,7 @@ use super::{
     super::address_reputation_storer::{seen_ord, upsert_bridge_seed},
     lz_enricher::EVM_NULL_SENTINEL,
 };
+use anyhow::Context;
 use aptos_indexer_processor_sdk::postgres::utils::database::ArcDbPool;
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
@@ -47,7 +48,11 @@ struct InflowRow {
 #[async_trait]
 pub trait LzDb: Send + Sync + 'static {
     /// Return all GUIDs that have no EVM source yet (startup seed).
-    async fn load_pending_guids(&self) -> VecDeque<String>;
+    ///
+    /// Must return `Err` on connection or query failure. Callers retry; they
+    /// must not treat a failed load as an empty queue (that drops unresolved
+    /// GUIDs until the next process restart).
+    async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>>;
     /// Persist the resolved EVM address (or sentinel) for a GUID and
     /// optionally propagate it to `address_evm_sources`.
     async fn write_evm(&self, guid: &str, evm: &str);
@@ -73,27 +78,20 @@ impl DbLzStore {
 
 #[async_trait]
 impl LzDb for DbLzStore {
-    async fn load_pending_guids(&self) -> VecDeque<String> {
-        let mut conn = match self.pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!(err = ?e, "lz_enricher: failed to get DB connection for startup seed");
-                return VecDeque::new();
-            },
-        };
-        match sql_query(
+    async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .context("lz_enricher: failed to get DB connection for startup seed")?;
+        let rows = sql_query(
             "SELECT lz_guid FROM bridge_inflows \
               WHERE lz_guid IS NOT NULL AND evm_source IS NULL",
         )
         .get_results::<GuidRow>(&mut conn)
         .await
-        {
-            Ok(rows) => rows.into_iter().map(|r| r.lz_guid).collect(),
-            Err(e) => {
-                error!(err = ?e, "lz_enricher: failed to load pending GUIDs; starting empty");
-                VecDeque::new()
-            },
-        }
+        .context("lz_enricher: failed to load pending GUIDs")?;
+        Ok(rows.into_iter().map(|r| r.lz_guid).collect())
     }
 
     async fn write_evm(&self, guid: &str, evm: &str) {

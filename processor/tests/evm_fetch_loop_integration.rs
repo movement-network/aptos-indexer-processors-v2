@@ -54,8 +54,8 @@ struct MockLzDb;
 
 #[async_trait]
 impl LzDb for MockLzDb {
-    async fn load_pending_guids(&self) -> VecDeque<String> {
-        VecDeque::new()
+    async fn load_pending_guids(&self) -> anyhow::Result<VecDeque<String>> {
+        Ok(VecDeque::new())
     }
 
     async fn write_evm(&self, _guid: &str, _evm: &str) {}

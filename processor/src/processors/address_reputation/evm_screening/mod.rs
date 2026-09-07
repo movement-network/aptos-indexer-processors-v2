@@ -1,10 +1,10 @@
 use self::{
     evm_connection::{EvmConnecting, EvmConnectionState, EvmScreening, HypernativeState},
     hypernative::{EvmScreeningDb, HypernativeClient},
-    lz_enricher::LzEnricher,
+    lz_enricher::{load_pending_guids_retrying, LzEnricher},
 };
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{sync::mpsc::UnboundedReceiver, time::MissedTickBehavior};
 use tracing::{error, info, warn};
 
@@ -66,7 +66,7 @@ impl EnricherLoop {
     }
 
     pub async fn run(mut self) {
-        let mut guid_queue: VecDeque<String> = self.lz.load_pending_guids().await;
+        let mut guid_queue = load_pending_guids_retrying(&self.lz, self.ctx.retry_delay).await;
 
         let mut evm_screening_state: Box<dyn EvmConnectionState> = Box::new(HypernativeState {
             state: EvmConnecting { last_ping: None },
