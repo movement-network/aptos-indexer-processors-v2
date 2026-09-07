@@ -7,7 +7,7 @@
     "amount": "0",
     "table_type_v1": null,
     "token_properties_mutated_v1": null,
-    "is_soulbound_v2": true,
+    "is_soulbound_v2": false,
     "token_standard": "v2",
     "is_fungible_v2": false,
     "last_transaction_version": 1080786089,

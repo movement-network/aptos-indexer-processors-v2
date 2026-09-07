@@ -275,9 +275,10 @@ impl TokenOwnershipV2 {
                 // is_soulbound currently means if an object is completely untransferrable
                 // OR if only admin can transfer. Only the former is true soulbound but
                 // people might already be using it with the latter meaning so let's include both.
+                // and_then (not map): object present with untransferable=None is not soulbound.
                 let is_soulbound = if object_metadatas
                     .get(&token_data_id)
-                    .map(|obj| obj.untransferable.as_ref())
+                    .and_then(|obj| obj.untransferable.as_ref())
                     .is_some()
                 {
                     true
@@ -833,5 +834,153 @@ impl From<CurrentTokenOwnershipV2> for PostgresCurrentTokenOwnershipV2 {
             last_transaction_timestamp: raw_item.last_transaction_timestamp,
             non_transferrable_by_owner: raw_item.non_transferrable_by_owner,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::objects::v2_object_utils::{ObjectAggregatedData, Untransferable};
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::MoveStructTag;
+
+    const TOKEN_ADDR: &str = "0xabc";
+    const OWNER_ADDR: &str = "0xdef";
+
+    fn object_core_write(
+        address: &str,
+        allow_ungated_transfer: bool,
+        owner: &str,
+    ) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectCore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectCore".to_string(),
+            data: format!(
+                r#"{{"allow_ungated_transfer":{allow_ungated_transfer},"guid_creation_num":"0","owner":"{owner}"}}"#
+            ),
+        }
+    }
+
+    fn burned_map(token_address: &str) -> TokenV2Burned {
+        let mut tokens_burned = AHashMap::new();
+        let token_data_id = standardize_address(token_address);
+        tokens_burned.insert(
+            token_data_id.clone(),
+            crate::processors::token_v2::token_v2_models::v2_token_utils::Burn::new(
+                standardize_address("0x1"),
+                BigDecimal::zero(),
+                token_data_id,
+                standardize_address(OWNER_ADDR),
+            ),
+        );
+        tokens_burned
+    }
+
+    fn object_metadata(
+        token_address: &str,
+        untransferable: Option<Untransferable>,
+    ) -> ObjectAggregatedDataMapping {
+        let mut map = AHashMap::new();
+        map.insert(standardize_address(token_address), ObjectAggregatedData {
+            untransferable,
+            ..ObjectAggregatedData::default()
+        });
+        map
+    }
+
+    fn txn_timestamp() -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    #[tokio::test]
+    async fn burned_transferable_nft_is_not_soulbound() {
+        // Production burn path: ObjectCore is still written and object_metadatas has
+        // the token with untransferable=None. The old map().is_some() treated
+        // Some(None) as soulbound.
+        let write_resource = object_core_write(TOKEN_ADDR, true, OWNER_ADDR);
+        let tokens_burned = burned_map(TOKEN_ADDR);
+        let object_metadatas = object_metadata(TOKEN_ADDR, None);
+        let prior = AHashMap::new();
+        let mut db_context = None;
+
+        let result = TokenOwnershipV2::get_burned_nft_v2_from_write_resource(
+            &write_resource,
+            1,
+            0,
+            txn_timestamp(),
+            &prior,
+            &tokens_burned,
+            &object_metadatas,
+            &mut db_context,
+        )
+        .await
+        .unwrap()
+        .expect("burned NFT ownership row");
+
+        assert_eq!(result.0.is_soulbound_v2, Some(false));
+        assert_eq!(result.1.is_soulbound_v2, Some(false));
+        assert_eq!(result.0.non_transferrable_by_owner, Some(false));
+        assert_eq!(result.1.non_transferrable_by_owner, Some(false));
+    }
+
+    #[tokio::test]
+    async fn burned_admin_gated_nft_is_soulbound() {
+        let write_resource = object_core_write(TOKEN_ADDR, false, OWNER_ADDR);
+        let tokens_burned = burned_map(TOKEN_ADDR);
+        let object_metadatas = object_metadata(TOKEN_ADDR, None);
+        let prior = AHashMap::new();
+        let mut db_context = None;
+
+        let result = TokenOwnershipV2::get_burned_nft_v2_from_write_resource(
+            &write_resource,
+            1,
+            0,
+            txn_timestamp(),
+            &prior,
+            &tokens_burned,
+            &object_metadatas,
+            &mut db_context,
+        )
+        .await
+        .unwrap()
+        .expect("burned NFT ownership row");
+
+        assert_eq!(result.0.is_soulbound_v2, Some(true));
+        assert_eq!(result.0.non_transferrable_by_owner, Some(true));
+    }
+
+    #[tokio::test]
+    async fn burned_untransferable_nft_is_soulbound() {
+        let write_resource = object_core_write(TOKEN_ADDR, true, OWNER_ADDR);
+        let tokens_burned = burned_map(TOKEN_ADDR);
+        let untransferable =
+            serde_json::from_str::<Untransferable>(r#"{"dummy_field":false}"#).unwrap();
+        let object_metadatas = object_metadata(TOKEN_ADDR, Some(untransferable));
+        let prior = AHashMap::new();
+        let mut db_context = None;
+
+        let result = TokenOwnershipV2::get_burned_nft_v2_from_write_resource(
+            &write_resource,
+            1,
+            0,
+            txn_timestamp(),
+            &prior,
+            &tokens_burned,
+            &object_metadatas,
+            &mut db_context,
+        )
+        .await
+        .unwrap()
+        .expect("burned NFT ownership row");
+
+        assert_eq!(result.0.is_soulbound_v2, Some(true));
+        // Owner-gated flag still follows ObjectCore, not Untransferable.
+        assert_eq!(result.0.non_transferrable_by_owner, Some(false));
     }
 }
