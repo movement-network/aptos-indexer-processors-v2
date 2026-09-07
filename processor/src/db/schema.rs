@@ -990,7 +990,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    proposal_votes (transaction_version, proposal_id, voter_address) {
+    proposal_votes (transaction_version, proposal_id, voter_address, staking_pool_address) {
         transaction_version -> Int8,
         proposal_id -> Int8,
         #[max_length = 66]

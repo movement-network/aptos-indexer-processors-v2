@@ -22,7 +22,7 @@ use parquet_derive::ParquetRecordWriter;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize)]
-#[diesel(primary_key(transaction_version, proposal_id, voter_address))]
+#[diesel(primary_key(transaction_version, proposal_id, voter_address, staking_pool_address))]
 #[diesel(table_name = proposal_votes)]
 pub struct ProposalVote {
     pub transaction_version: i64,
@@ -118,7 +118,7 @@ impl From<ProposalVote> for ParquetProposalVote {
 
 // Postgres models
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize)]
-#[diesel(primary_key(transaction_version, proposal_id, voter_address))]
+#[diesel(primary_key(transaction_version, proposal_id, voter_address, staking_pool_address))]
 #[diesel(table_name = proposal_votes)]
 pub struct PostgresProposalVote {
     pub transaction_version: i64,
@@ -141,5 +141,113 @@ impl From<ProposalVote> for PostgresProposalVote {
             should_pass: base.should_pass,
             transaction_timestamp: base.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::{
+        transaction::v1::{transaction::TxnData, Event, EventKey, Transaction, UserTransaction},
+        util::timestamp::Timestamp,
+    };
+    use std::collections::HashSet;
+
+    const VOTER: &str = "0xa";
+    const POOL_A: &str = "0xb";
+    const POOL_B: &str = "0xc";
+    const STANDARDIZED_VOTER: &str =
+        "0x000000000000000000000000000000000000000000000000000000000000000a";
+    const STANDARDIZED_POOL_A: &str =
+        "0x000000000000000000000000000000000000000000000000000000000000000b";
+    const STANDARDIZED_POOL_B: &str =
+        "0x000000000000000000000000000000000000000000000000000000000000000c";
+
+    fn vote_event(type_str: &str, stake_pool: &str, num_votes: &str) -> Event {
+        Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: "0x1".to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: type_str.to_string(),
+            data: format!(
+                r#"{{"proposal_id":"7","voter":"{VOTER}","stake_pool":"{stake_pool}","num_votes":"{num_votes}","should_pass":true}}"#
+            ),
+        }
+    }
+
+    fn user_txn_with_events(events: Vec<Event>) -> Transaction {
+        Transaction {
+            timestamp: Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            version: 42,
+            info: None,
+            epoch: 0,
+            block_height: 0,
+            r#type: 4,
+            size_info: None,
+            txn_data: Some(TxnData::User(UserTransaction {
+                request: None,
+                events,
+            })),
+        }
+    }
+
+    #[test]
+    fn batch_vote_keeps_one_row_per_stake_pool() {
+        // 0x1::aptos_governance::batch_vote loops vote_internal per pool and
+        // emits one VoteEvent per pool in the same transaction. The previous
+        // PK (transaction_version, proposal_id, voter_address) made the
+        // second insert hit ON CONFLICT DO NOTHING.
+        let txn = user_txn_with_events(vec![
+            vote_event("0x1::aptos_governance::VoteEvent", POOL_A, "100"),
+            vote_event("0x1::aptos_governance::Vote", POOL_B, "250"),
+        ]);
+
+        let votes = ProposalVote::from_transaction(&txn).unwrap();
+        assert_eq!(votes.len(), 2);
+        assert!(votes.iter().all(|v| {
+            v.transaction_version == 42
+                && v.proposal_id == 7
+                && v.voter_address == STANDARDIZED_VOTER
+                && v.should_pass
+        }));
+        assert_eq!(votes[0].staking_pool_address, STANDARDIZED_POOL_A);
+        assert_eq!(votes[0].num_votes, BigDecimal::from(100));
+        assert_eq!(votes[1].staking_pool_address, STANDARDIZED_POOL_B);
+        assert_eq!(votes[1].num_votes, BigDecimal::from(250));
+
+        let old_pk: HashSet<_> = votes
+            .iter()
+            .map(|v| {
+                (
+                    v.transaction_version,
+                    v.proposal_id,
+                    v.voter_address.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            old_pk.len(),
+            1,
+            "batch votes share the old 3-column PK and would collapse"
+        );
+
+        let new_pk: HashSet<_> = votes
+            .iter()
+            .map(|v| {
+                (
+                    v.transaction_version,
+                    v.proposal_id,
+                    v.voter_address.clone(),
+                    v.staking_pool_address.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(new_pk.len(), 2);
     }
 }

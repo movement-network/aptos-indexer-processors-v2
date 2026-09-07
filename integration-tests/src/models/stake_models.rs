@@ -113,7 +113,7 @@ pub struct CurrentDelegatorPoolBalance {
 }
 
 #[derive(Clone, Debug, Deserialize, FieldCount, Identifiable, Insertable, Serialize, Queryable)]
-#[diesel(primary_key(transaction_version, proposal_id, voter_address))]
+#[diesel(primary_key(transaction_version, proposal_id, voter_address, staking_pool_address))]
 #[diesel(table_name = proposal_votes)]
 pub struct ProposalVote {
     pub transaction_version: i64,
