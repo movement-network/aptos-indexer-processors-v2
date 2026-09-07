@@ -216,28 +216,15 @@ impl CurrentDelegatorBalance {
                     txn_version
                 ))?;
             let shares = shares / &pool_balance.scaling_factor;
-            Ok(Some((
-                DelegatorBalance {
-                    transaction_version: txn_version,
-                    write_set_change_index,
-                    delegator_address: delegator_address.clone(),
-                    pool_address: pool_address.clone(),
-                    pool_type: "inactive_shares".to_string(),
-                    table_handle: table_handle.clone(),
-                    shares: shares.clone(),
-                    parent_table_handle: inactive_pool_handle.clone(),
-                    block_timestamp,
-                },
-                Self {
-                    delegator_address,
-                    pool_address,
-                    pool_type: "inactive_shares".to_string(),
-                    table_handle: table_handle.clone(),
-                    last_transaction_version: txn_version,
-                    shares,
-                    parent_table_handle: inactive_pool_handle,
-                    block_timestamp,
-                },
+            Ok(Some(Self::inactive_share_rows(
+                txn_version,
+                write_set_change_index,
+                delegator_address,
+                pool_address,
+                table_handle,
+                inactive_pool_handle,
+                shares,
+                block_timestamp,
             )))
         } else {
             Ok(None)
@@ -321,31 +308,57 @@ impl CurrentDelegatorBalance {
             };
             let delegator_address = standardize_address(&delete_table_item.key.to_string());
 
-            return Ok(Some((
-                DelegatorBalance {
-                    transaction_version: txn_version,
-                    write_set_change_index,
-                    delegator_address: delegator_address.clone(),
-                    pool_address: pool_address.clone(),
-                    pool_type: "inactive_shares".to_string(),
-                    table_handle: table_handle.clone(),
-                    shares: BigDecimal::zero(),
-                    parent_table_handle: inactive_pool_handle.clone(),
-                    block_timestamp,
-                },
-                Self {
-                    delegator_address,
-                    pool_address,
-                    pool_type: "inactive_shares".to_string(),
-                    table_handle: table_handle.clone(),
-                    last_transaction_version: txn_version,
-                    shares: BigDecimal::zero(),
-                    parent_table_handle: table_handle,
-                    block_timestamp,
-                },
+            return Ok(Some(Self::inactive_share_rows(
+                txn_version,
+                write_set_change_index,
+                delegator_address,
+                pool_address,
+                table_handle,
+                inactive_pool_handle,
+                BigDecimal::zero(),
+                block_timestamp,
             )));
         }
         Ok(None)
+    }
+
+    /// History and current inactive-share rows both store the inactive-pool
+    /// table handle as `parent_table_handle`. That is the key
+    /// `get_staking_pool_from_inactive_share_handle` looks up later.
+    /// The shares table handle stays on `table_handle`.
+    fn inactive_share_rows(
+        txn_version: i64,
+        write_set_change_index: i64,
+        delegator_address: String,
+        pool_address: String,
+        table_handle: String,
+        inactive_pool_handle: String,
+        shares: BigDecimal,
+        block_timestamp: NaiveDateTime,
+    ) -> (DelegatorBalance, Self) {
+        (
+            DelegatorBalance {
+                transaction_version: txn_version,
+                write_set_change_index,
+                delegator_address: delegator_address.clone(),
+                pool_address: pool_address.clone(),
+                pool_type: "inactive_shares".to_string(),
+                table_handle: table_handle.clone(),
+                shares: shares.clone(),
+                parent_table_handle: inactive_pool_handle.clone(),
+                block_timestamp,
+            },
+            Self {
+                delegator_address,
+                pool_address,
+                pool_type: "inactive_shares".to_string(),
+                table_handle,
+                last_transaction_version: txn_version,
+                shares,
+                parent_table_handle: inactive_pool_handle,
+                block_timestamp,
+            },
+        )
     }
 
     /// Key is the inactive share table handle obtained from 0x1::delegation_pool::DelegationPool
@@ -700,5 +713,72 @@ impl From<DelegatorBalance> for PostgresDelegatorBalance {
             shares: base.shares,
             parent_table_handle: base.parent_table_handle,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDateTime;
+
+    fn block_timestamp() -> NaiveDateTime {
+        NaiveDateTime::parse_from_str("2024-01-01 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    fn sample_inactive_share_rows(
+        shares: BigDecimal,
+    ) -> (String, String, DelegatorBalance, CurrentDelegatorBalance) {
+        let shares_table_handle =
+            "0x00000000000000000000000000000000000000000000000000000000000000aa".to_string();
+        let inactive_pool_handle =
+            "0x00000000000000000000000000000000000000000000000000000000000000bb".to_string();
+        let (history, current) = CurrentDelegatorBalance::inactive_share_rows(
+            42,
+            3,
+            "0x00000000000000000000000000000000000000000000000000000000000000cc".to_string(),
+            "0x00000000000000000000000000000000000000000000000000000000000000dd".to_string(),
+            shares_table_handle.clone(),
+            inactive_pool_handle.clone(),
+            shares,
+            block_timestamp(),
+        );
+        (shares_table_handle, inactive_pool_handle, history, current)
+    }
+
+    #[test]
+    fn delete_current_row_uses_inactive_pool_parent_handle() {
+        let (shares_table_handle, inactive_pool_handle, history, current) =
+            sample_inactive_share_rows(BigDecimal::zero());
+
+        assert_ne!(shares_table_handle, inactive_pool_handle);
+        assert_eq!(history.table_handle, shares_table_handle);
+        assert_eq!(current.table_handle, shares_table_handle);
+        assert_eq!(history.parent_table_handle, inactive_pool_handle);
+        // Regression: delete used to copy `table_handle` (shares table) into
+        // current.parent_table_handle, breaking get_by_inactive_share_handle.
+        assert_eq!(current.parent_table_handle, inactive_pool_handle);
+        assert_ne!(current.parent_table_handle, shares_table_handle);
+        assert!(history.shares.is_zero());
+        assert!(current.shares.is_zero());
+        assert_eq!(current.pool_type, "inactive_shares");
+        assert_eq!(history.pool_type, "inactive_shares");
+    }
+
+    #[test]
+    fn write_and_delete_agree_on_parent_table_handle() {
+        let (_, inactive_pool_handle, write_history, write_current) =
+            sample_inactive_share_rows(BigDecimal::from(10));
+        let (_, _, delete_history, delete_current) = sample_inactive_share_rows(BigDecimal::zero());
+
+        assert_eq!(write_history.parent_table_handle, inactive_pool_handle);
+        assert_eq!(write_current.parent_table_handle, inactive_pool_handle);
+        assert_eq!(
+            write_current.parent_table_handle,
+            delete_current.parent_table_handle
+        );
+        assert_eq!(
+            write_history.parent_table_handle,
+            delete_history.parent_table_handle
+        );
     }
 }
