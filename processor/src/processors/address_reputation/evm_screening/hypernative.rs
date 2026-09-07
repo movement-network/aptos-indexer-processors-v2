@@ -231,8 +231,9 @@ impl HypernativeClient {
     /// After acquiring a rate-limiter slot, addresses already present in the TTL
     /// cache are returned as `HypernativeResult { duplicate: true }` without hitting
     /// the API. Only uncached addresses are sent to Hypernative. On success, those
-    /// addresses are inserted into the cache; on any failure they remain uncached so
-    /// the retry mechanism can re-send them.
+    /// addresses are inserted into the cache; on any failure (including HTTP 200
+    /// with a missing or empty `data` array) they remain uncached so the retry
+    /// mechanism can re-send them.
     pub async fn fetch_batch(&self, addresses: &[&str]) -> anyhow::Result<Vec<HypernativeResult>> {
         let permit = self.rate_limiter.acquire().await;
 
@@ -304,14 +305,22 @@ impl HypernativeClient {
             .await
             .map_err(|e| anyhow::anyhow!("json: {e}"))?;
 
-        let data = match json.get("data").and_then(|d| d.as_array()) {
+        // A 200 without usable `data` is a retryable failure, same as a
+        // malformed entry. Returning Ok here used to make `screen_evms` persist
+        // a 0.1 "not available" score with `to_be_updated = false`, so the
+        // address was never retried (and `load_pending_evms` would not pick it
+        // up). Keep the addresses uncached so MAX_RETRIES / error_score apply.
+        let data = match json
+            .get("data")
+            .and_then(|d| d.as_array())
+            .filter(|arr| !arr.is_empty())
+        {
             Some(arr) => arr,
             None => {
-                warn!(
-                    evm_count = to_process.len(),
-                    "hypernative: response missing 'data' array — dropping batch without retry"
+                anyhow::bail!(
+                    "Hypernative response missing or empty 'data' array for {} address(es)",
+                    to_process.len()
                 );
-                return Ok(results);
             },
         };
 
