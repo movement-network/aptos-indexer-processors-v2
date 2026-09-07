@@ -60,7 +60,9 @@ use crate::{
             },
             token_v2_processor::TokenV2ProcessorConfig,
         },
-        user_transaction::models::user_transactions::ParquetUserTransaction,
+        user_transaction::models::{
+            signatures::ParquetSignature, user_transactions::ParquetUserTransaction,
+        },
     },
 };
 use ahash::AHashMap;
@@ -191,9 +193,13 @@ impl ProcessorConfig {
                 ParquetCurrentTableItem::TABLE_NAME.to_string(),
                 ParquetTableMetadata::TABLE_NAME.to_string(),
             ]),
-            ProcessorName::ParquetUserTransactionProcessor => {
-                HashSet::from([ParquetUserTransaction::TABLE_NAME.to_string()])
-            },
+            // Must include every table ParquetUserTransactionExtractor writes.
+            // The version tracker checkpoints `signatures`, but resume only
+            // queries names in this set.
+            ProcessorName::ParquetUserTransactionProcessor => HashSet::from([
+                ParquetUserTransaction::TABLE_NAME.to_string(),
+                ParquetSignature::TABLE_NAME.to_string(),
+            ]),
             ProcessorName::ParquetEventsProcessor => {
                 HashSet::from([ParquetEvent::TABLE_NAME.to_string()])
             },
@@ -407,5 +413,50 @@ mod tests {
 
         let table_names = result.unwrap();
         assert_eq!(table_names, vec!["transactions".to_string(),]);
+    }
+
+    #[test]
+    fn test_parquet_user_transaction_table_names_match_extractor_writes() {
+        // Resume queries every name in this set. The extractor writes
+        // signatures and the version tracker checkpoints them via
+        // ParquetTypeEnum::Signatures ("signatures"). Omitting that name
+        // means resume never considers the signatures watermark.
+        let resume_tables =
+            ProcessorConfig::table_names(&ProcessorName::ParquetUserTransactionProcessor);
+        let extractor_writes = HashSet::from([
+            ParquetUserTransaction::TABLE_NAME.to_string(),
+            ParquetSignature::TABLE_NAME.to_string(),
+        ]);
+        assert_eq!(resume_tables, extractor_writes);
+        assert_eq!(
+            crate::parquet_processors::ParquetTypeEnum::Signatures.to_string(),
+            ParquetSignature::TABLE_NAME
+        );
+        assert_eq!(
+            crate::parquet_processors::ParquetTypeEnum::UserTransactions.to_string(),
+            ParquetUserTransaction::TABLE_NAME
+        );
+    }
+
+    #[test]
+    fn test_parquet_user_transaction_empty_backfill_status_keys() {
+        let config =
+            ProcessorConfig::ParquetUserTransactionProcessor(ParquetDefaultProcessorConfig {
+                backfill_table: HashSet::new(),
+                channel_size: 10,
+                max_buffer_size: 100000,
+                upload_interval: 1800,
+            });
+
+        let table_names: HashSet<String> = config
+            .get_processor_status_table_names()
+            .unwrap()
+            .into_iter()
+            .collect();
+        let expected: HashSet<String> = ["user_transactions", "signatures"]
+            .into_iter()
+            .map(|table| format!("parquet_user_transaction_processor.{table}"))
+            .collect();
+        assert_eq!(table_names, expected);
     }
 }
