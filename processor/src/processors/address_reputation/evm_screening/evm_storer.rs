@@ -72,7 +72,7 @@ impl EvmScreeningDb for DbScoreSaver {
                AND fetched_at > $2 \
              LIMIT 1",
         )
-        .bind::<Varchar, _>(evm)
+        .bind::<Varchar, _>(crate::processors::address_reputation::standardize_evm_address(evm))
         .bind::<Timestamp, _>(ttl_cutoff)
         .get_results::<EvmRow>(&mut conn)
         .await

@@ -363,7 +363,7 @@ impl HypernativeClient {
 /// (Hypernative unavailable at the time the address was received).
 pub fn error_score(evm: &str) -> EvmRiskScore {
     EvmRiskScore {
-        evm_address: evm.to_string(),
+        evm_address: crate::processors::address_reputation::standardize_evm_address(evm),
         risk_score: BigDecimal::from(0),
         risk_label: "hypernative".to_string(),
         source: "not available".to_string(),
@@ -394,7 +394,7 @@ pub fn compute_risk_score(evm: &str, result: &HypernativeResult, source: &str) -
         _ => BigDecimal::from_str("0.1").unwrap(),
     };
     EvmRiskScore {
-        evm_address: evm.to_string(),
+        evm_address: crate::processors::address_reputation::standardize_evm_address(evm),
         risk_score: rec + sev,
         risk_label: "hypernative".to_string(),
         source: source.to_string(),
@@ -484,4 +484,41 @@ pub async fn screen_evms(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compute_risk_score, error_score, HypernativeResult};
+
+    #[test]
+    fn error_score_lowercases_evm_address() {
+        let score = error_score("0x8F5633d77Eb1D6bf6c0D357148135A91B0e1F87F");
+        assert_eq!(
+            score.evm_address,
+            "0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f"
+        );
+    }
+
+    #[test]
+    fn compute_risk_score_lowercases_evm_address() {
+        let result = HypernativeResult {
+            address: "0x8F5633d77Eb1D6bf6c0D357148135A91B0e1F87F".to_string(),
+            recommendation: "approve".to_string(),
+            severity: "low".to_string(),
+            total_incoming_usd: None,
+            total_outgoing_usd: None,
+            policy_id: None,
+            screened_at: None,
+            duplicate: false,
+        };
+        let score = compute_risk_score(
+            "0x8F5633d77Eb1D6bf6c0D357148135A91B0e1F87F",
+            &result,
+            "hypernative",
+        );
+        assert_eq!(
+            score.evm_address,
+            "0x8f5633d77eb1d6bf6c0d357148135a91b0e1f87f"
+        );
+    }
 }

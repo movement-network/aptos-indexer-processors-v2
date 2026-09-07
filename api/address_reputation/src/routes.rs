@@ -28,6 +28,15 @@ fn is_valid_evm_address(addr: &str) -> bool {
     addr.len() == 42 && addr.starts_with("0x") && addr[2..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Lowercase `0x`-prefixed form so lookups hit the processor's case-sensitive PK.
+fn standardize_evm_address(addr: &str) -> String {
+    let hex = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .unwrap_or(addr);
+    format!("0x{}", hex.to_ascii_lowercase())
+}
+
 fn bad_address(addr: &str, kind: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -173,6 +182,11 @@ async fn handle_evms(State(state): State<AppState>, Json(addrs): Json<Vec<String
         return bad_address(bad, "evm");
     }
 
+    // Match processor writes: risk-score PK is case-sensitive.
+    let addrs: Vec<String> = addrs
+        .into_iter()
+        .map(|a| standardize_evm_address(&a))
+        .collect();
     let input_count = addrs.len();
     match db::query_evms(&state.pool, addrs).await {
         Ok(rows) => {
