@@ -277,6 +277,8 @@ impl FungibleAssetBalance {
             {
                 let owner_address = standardize_address(deleted_fa_store_event.owner.as_str());
                 let asset_type = standardize_address(deleted_fa_store_event.metadata.as_str());
+                let is_primary =
+                    Self::is_primary(&owner_address, &asset_type, &resource.resource_address);
 
                 return Ok(Some(Self {
                     transaction_version: txn_version,
@@ -284,7 +286,7 @@ impl FungibleAssetBalance {
                     storage_id: resource.resource_address.clone(),
                     owner_address: owner_address.clone(),
                     asset_type: asset_type.clone(),
-                    is_primary: false, // Deleted stores can only be secondary
+                    is_primary,
                     is_frozen: false,
                     amount: BigDecimal::zero(),
                     transaction_timestamp: txn_timestamp,
@@ -612,6 +614,11 @@ impl From<CurrentUnifiedFungibleAssetBalance> for PostgresCurrentUnifiedFungible
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processors::fungible_asset::fungible_asset_models::v2_fungible_asset_utils::FungibleAssetStoreDeletionEvent;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        DeleteResource, MoveStructTag,
+    };
+    use chrono::DateTime;
 
     #[test]
     fn test_is_primary() {
@@ -661,5 +668,92 @@ mod tests {
             *APT_METADATA_ADDRESS_HEX
         );
         assert_eq!(get_paired_metadata_address("0x66c34778730acbb120cefa57a3d98fd21e0c8b3a51e9baee530088b2e444e94c::moon_coin::MoonCoin"), "0xf772c28c069aa7e4417d85d771957eb3c5c11b5bf90b1965cda23b899ebc0384");
+    }
+
+    fn object_group_delete(address: &str) -> DeleteResource {
+        DeleteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectGroup".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectGroup".to_string(),
+        }
+    }
+
+    fn deletion_event(owner: &str, metadata: &str, store: &str) -> FungibleAssetStoreDeletionEvent {
+        FungibleAssetStoreDeletionEvent {
+            owner: owner.to_string(),
+            metadata: metadata.to_string(),
+            store: store.to_string(),
+        }
+    }
+
+    #[test]
+    fn delete_resource_preserves_primary_store_flag() {
+        let owner_address = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let metadata_address = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
+        let primary_store = "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
+
+        let mut events = StoreAddressToDeletedFungibleAssetStoreEvent::new();
+        events.insert(
+            primary_store.to_string(),
+            deletion_event(owner_address, metadata_address, primary_store),
+        );
+
+        let ts = DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc();
+        let deleted = FungibleAssetBalance::get_v2_from_delete_resource(
+            &object_group_delete(primary_store),
+            0,
+            42,
+            ts,
+            &events,
+        )
+        .unwrap()
+        .expect("primary store deletion should produce a zeroed balance row");
+
+        assert!(
+            deleted.is_primary,
+            "deleting a primary store must not flip is_primary to false"
+        );
+        assert_eq!(deleted.amount, BigDecimal::zero());
+        assert_eq!(deleted.storage_id, primary_store);
+        assert_eq!(deleted.owner_address, owner_address);
+        assert_eq!(deleted.asset_type, metadata_address);
+    }
+
+    #[test]
+    fn delete_resource_keeps_secondary_store_flag() {
+        let owner_address = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let metadata_address = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
+        let secondary_store = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        let mut events = StoreAddressToDeletedFungibleAssetStoreEvent::new();
+        events.insert(
+            secondary_store.to_string(),
+            deletion_event(owner_address, metadata_address, secondary_store),
+        );
+
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc();
+        let deleted = FungibleAssetBalance::get_v2_from_delete_resource(
+            &object_group_delete(secondary_store),
+            1,
+            43,
+            ts,
+            &events,
+        )
+        .unwrap()
+        .expect("secondary store deletion should produce a zeroed balance row");
+
+        assert!(!deleted.is_primary);
+        assert_eq!(deleted.amount, BigDecimal::zero());
+        assert_eq!(deleted.storage_id, secondary_store);
     }
 }
