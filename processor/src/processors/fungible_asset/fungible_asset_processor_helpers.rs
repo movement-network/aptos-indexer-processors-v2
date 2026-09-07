@@ -200,10 +200,12 @@ pub async fn parse_v2_coin(
                     &event.data,
                     txn_version,
                 ) {
-                    store_address_to_deleted_fa_store_events.insert(
-                        fa_store_deletion_event.clone().store,
-                        fa_store_deletion_event,
-                    );
+                    // Event JSON store addresses are not always 64-char padded. Lookups
+                    // use standardize_address (activities) or resource.resource_address
+                    // (balances), so the map key must be standardized or the row is skipped.
+                    let standardized_store = standardize_address(&fa_store_deletion_event.store);
+                    store_address_to_deleted_fa_store_events
+                        .insert(standardized_store, fa_store_deletion_event);
                 }
             }
 
