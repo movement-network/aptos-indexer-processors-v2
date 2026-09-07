@@ -277,31 +277,21 @@ pub async fn upsert_bridge_seed(
     Ok(())
 }
 
-/// Distribute a transfer's `amount` across the sender's existing EVM sources.
-/// Each source E gets `amount * (evm_fund_A[E] / SUM_E(evm_fund_A))` added to the
-/// receiver's rollup. Sender rows are NOT modified. Runs inside the caller's
-/// DB transaction so read-your-writes ordering is preserved within a batch.
-async fn propagate_evm_sources(
-    conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
-    from_addr: &str,
-    to_addr: &str,
-    asset: &str,
-    amount: &BigDecimal,
-    ord: i64,
-) -> Result<(), ProcessorError> {
-    let sql_str = "\
+/// Weights each sender source by total attribution. Hop-1+ rows have
+/// `evm_fund = 0`, so omitting `transfer_fund` silently drops hop-2+.
+const PROPAGATE_EVM_SOURCES_SQL: &str = "\
         WITH src AS ( \
-            SELECT evm_address, evm_fund, hops_min \
+            SELECT evm_address, evm_fund, transfer_fund, hops_min \
               FROM address_evm_sources \
              WHERE movement_address = $1 AND asset_type = $2 \
         ), \
-        total AS (SELECT SUM(evm_fund) AS t FROM src) \
+        total AS (SELECT SUM(evm_fund + transfer_fund) AS t FROM src) \
         INSERT INTO address_evm_sources \
             (movement_address, asset_type, evm_address, evm_fund, transfer_fund, \
              first_seen_ord, last_seen_ord, hops_min) \
         SELECT $3, $2, s.evm_address, \
                0, \
-               ROUND(($4 / total.t) * s.evm_fund * (1.0 / (s.hops_min + 1)), 9), \
+               ROUND(($4 / total.t) * (s.evm_fund + s.transfer_fund) * (1.0 / (s.hops_min + 1)), 9), \
                $5, $5, s.hops_min + 1 \
           FROM src s CROSS JOIN total \
          WHERE total.t IS NOT NULL AND total.t > 0 \
@@ -312,7 +302,28 @@ async fn propagate_evm_sources(
             hops_min       = LEAST(address_evm_sources.hops_min, EXCLUDED.hops_min), \
             updated_at     = NOW() \
         RETURNING movement_address, asset_type, evm_address, evm_fund, transfer_fund, hops_min";
-    let rows = sql_query(sql_str)
+
+/// Distribute a transfer's `amount` across the sender's existing EVM sources.
+/// Each source E is weighted by the sender's **total** attribution
+/// (`evm_fund + transfer_fund`). Hop-1+ rows store attribution only in
+/// `transfer_fund` (`evm_fund` stays 0), so weighting `evm_fund` alone
+/// would drop every transfer whose sender was funded by a prior transfer
+/// rather than a direct bridge inflow.
+///
+/// Each source E gets
+/// `amount * (w_A[E] / SUM_E(w_A)) * (1 / (hops_min_A[E] + 1))` added to the
+/// receiver's `transfer_fund`, where `w = evm_fund + transfer_fund`.
+/// Sender rows are NOT modified. Runs inside the caller's DB transaction so
+/// read-your-writes ordering is preserved within a batch.
+async fn propagate_evm_sources(
+    conn: &mut aptos_indexer_processor_sdk::postgres::utils::database::DbPoolConnection<'_>,
+    from_addr: &str,
+    to_addr: &str,
+    asset: &str,
+    amount: &BigDecimal,
+    ord: i64,
+) -> Result<(), ProcessorError> {
+    let rows = sql_query(PROPAGATE_EVM_SOURCES_SQL)
         .bind::<Text, _>(from_addr)
         .bind::<Varchar, _>(asset)
         .bind::<Varchar, _>(to_addr)
@@ -337,4 +348,25 @@ async fn propagate_evm_sources(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PROPAGATE_EVM_SOURCES_SQL;
+
+    #[test]
+    fn propagate_sql_weights_total_attribution_not_evm_fund_alone() {
+        assert!(
+            PROPAGATE_EVM_SOURCES_SQL.contains("SUM(evm_fund + transfer_fund)"),
+            "denominator must include hop-1+ transfer_fund or B→C is a no-op"
+        );
+        assert!(
+            PROPAGATE_EVM_SOURCES_SQL.contains("(s.evm_fund + s.transfer_fund)"),
+            "per-source weight must include transfer_fund"
+        );
+        assert!(
+            !PROPAGATE_EVM_SOURCES_SQL.contains("SUM(evm_fund) AS t"),
+            "pre-split SUM(evm_fund) silently drops hop-2+"
+        );
+    }
 }

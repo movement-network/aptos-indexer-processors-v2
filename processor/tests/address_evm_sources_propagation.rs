@@ -16,6 +16,11 @@
 //!   - After A->B, B has {E1..E8}: E4,E5 have merged (evm_fund summed,
 //!     hops_min = LEAST of the two), E1..E3 are new at hop 1, E6..E8 stay at
 //!     their prior hop with their prior evm_fund untouched.
+//!
+//! Scenario 3 (hop-2+):
+//!   - Seed A, transfer A->B, then B->C.
+//!   - C must inherit A's EVM sources at hops_min=2, weighted by B's
+//!     transfer_fund (not evm_fund, which is 0 on hop-1 rows).
 
 use aptos_indexer_processor_sdk::{
     aptos_indexer_transaction_stream::TransactionStreamConfig,
@@ -41,6 +46,7 @@ use std::str::FromStr;
 const ASSET: &str = "0x0000000000000000000000000000000000000000000000000000000000000aaa";
 const A_ADDR: &str = "0x00000000000000000000000000000000000000000000000000000000000000a1";
 const B_ADDR: &str = "0x00000000000000000000000000000000000000000000000000000000000000b2";
+const C_ADDR: &str = "0x00000000000000000000000000000000000000000000000000000000000000c3";
 
 fn evm(i: u32) -> String {
     format!("0x{:064x}", 0x1000_0000 + i)
@@ -387,4 +393,104 @@ async fn merges_overlapping_evm_sources_on_a_to_b() {
     assert!(a_after.iter().all(|r| r.hops_min == 0
         && r.evm_fund == BigDecimal::from(100)
         && r.transfer_fund == BigDecimal::from(0)));
+}
+
+/// Hop-1 rows store attribution in `transfer_fund` and leave `evm_fund = 0`.
+/// A subsequent B→C transfer must still split C's incoming amount across B's
+/// sources using that total attribution; otherwise hop-2+ is silently dropped.
+#[tokio::test]
+async fn propagates_hop2_evm_sources_from_b_to_c() {
+    let (_db, pool) = spin_up().await;
+    let (guid_tx, _guid_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut storer = AddressReputationStorer::new(pool.clone(), config(), guid_tx);
+
+    let amounts = vec![400u64, 600];
+    let seed_total: u64 = amounts.iter().sum();
+    let (edges, inflows) = seed_bridge_batch(A_ADDR, 2, 1000, &amounts);
+    storer
+        .process(TransactionContext {
+            data: (edges, inflows),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("seed A")
+        .expect("seed A output");
+
+    let a_to_b_amt: u64 = 500;
+    storer
+        .process(TransactionContext {
+            data: (vec![transfer(A_ADDR, B_ADDR, a_to_b_amt, 2000, 0)], vec![]),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("A->B")
+        .expect("A->B output");
+
+    let b_rows = read_rows(&pool, B_ADDR).await;
+    assert_eq!(b_rows.len(), 2, "B should inherit both of A's EVM sources");
+    assert!(b_rows
+        .iter()
+        .all(|r| r.hops_min == 1 && r.evm_fund == BigDecimal::from(0)));
+
+    let b_to_c_amt: u64 = 200;
+    storer
+        .process(TransactionContext {
+            data: (vec![transfer(B_ADDR, C_ADDR, b_to_c_amt, 3000, 0)], vec![]),
+            metadata: Default::default(),
+        })
+        .await
+        .expect("B->C")
+        .expect("B->C output");
+
+    let c_rows = read_rows(&pool, C_ADDR).await;
+    assert_eq!(
+        c_rows.len(),
+        2,
+        "C must inherit B's EVM sources; hop-2 must not be dropped because B.evm_fund is 0"
+    );
+
+    // B's hop-1 transfer_fund for Ei = a_to_b_amt * amounts[i] / seed_total
+    // (discount 1/(0+1)=1). C's hop-2 transfer_fund is then
+    // b_to_c_amt * (B.transfer_fund_i / sum(B.transfer_fund)) * (1/(1+1)).
+    // sum(B.transfer_fund) = a_to_b_amt, so
+    // C.tf_i = b_to_c_amt * (amounts[i] / seed_total) * 0.5
+    let c_map: std::collections::HashMap<_, _> =
+        c_rows.iter().map(|r| (r.evm_address.clone(), r)).collect();
+    for (i, &amt) in amounts.iter().enumerate() {
+        let row = c_map[&evm(i as u32)];
+        assert_eq!(row.hops_min, 2, "E{i}: hop must be 2");
+        assert_eq!(
+            row.evm_fund,
+            BigDecimal::from(0),
+            "E{i}: hop-2 is never a direct bridge inflow"
+        );
+        let expected_tf = BigDecimal::from(b_to_c_amt) * BigDecimal::from(amt)
+            / BigDecimal::from(seed_total)
+            / BigDecimal::from(2);
+        let diff = (&row.transfer_fund - &expected_tf).abs();
+        assert!(
+            diff < BigDecimal::from_str("0.000001").unwrap(),
+            "E{i}: transfer_fund got {}, expected {expected_tf}",
+            row.transfer_fund,
+        );
+    }
+
+    let total_c: BigDecimal = c_rows
+        .iter()
+        .fold(BigDecimal::from(0), |a, r| a + &r.transfer_fund);
+    let expected_total = BigDecimal::from(b_to_c_amt) / BigDecimal::from(2);
+    let diff = (&total_c - &expected_total).abs();
+    assert!(
+        diff < BigDecimal::from_str("0.000001").unwrap(),
+        "sum(C.transfer_fund) must equal b_to_c_amt * hop-1 decay 1/2; got {total_c}"
+    );
+
+    // B must be unchanged by the outflow.
+    let b_after = read_rows(&pool, B_ADDR).await;
+    assert_eq!(b_after.len(), 2);
+    for (before, after) in b_rows.iter().zip(b_after.iter()) {
+        assert_eq!(before.transfer_fund, after.transfer_fund);
+        assert_eq!(before.evm_fund, after.evm_fund);
+        assert_eq!(before.hops_min, after.hops_min);
+    }
 }
