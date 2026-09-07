@@ -23,7 +23,7 @@ use crate::{
                 v2_fungible_asset_utils::FungibleAssetStore,
             },
         },
-        objects::v2_object_utils::ObjectAggregatedDataMapping,
+        objects::v2_object_utils::{ObjectAggregatedDataMapping, ObjectCore},
         token_v2::token_v2_models::v2_token_utils::TokenStandard,
     },
     schema::{
@@ -205,6 +205,7 @@ impl FungibleAssetBalance {
         txn_version: i64,
         txn_timestamp: chrono::NaiveDateTime,
         object_metadatas: &ObjectAggregatedDataMapping,
+        store_address_to_deleted_fa_store_events: &StoreAddressToDeletedFungibleAssetStoreEvent,
     ) -> anyhow::Result<Option<Self>> {
         if let Some(inner) = &FungibleAssetStore::from_write_resource(write_resource)? {
             let storage_id = standardize_address(write_resource.address.as_str());
@@ -238,6 +239,31 @@ impl FungibleAssetBalance {
                     token_standard: TokenStandard::V2.to_string(),
                 };
                 return Ok(Some(coin_balance));
+            }
+        } else if let Some(inner) = &ObjectCore::from_write_resource(write_resource)? {
+            // FungibleStore was deleted but the object / resource group still exists.
+            // Resource groups then emit ObjectCore as a WriteResource; the ObjectGroup
+            // DeleteResource path never fires, so current_fungible_asset_balances would
+            // keep the pre-deletion amount unless we zero it here.
+            let storage_id = standardize_address(write_resource.address.as_str());
+            if let Some(deleted_fa_store_event) =
+                store_address_to_deleted_fa_store_events.get(&storage_id)
+            {
+                let owner_address = inner.get_owner_address();
+                let asset_type = standardize_address(deleted_fa_store_event.metadata.as_str());
+                let is_primary = Self::is_primary(&owner_address, &asset_type, &storage_id);
+                return Ok(Some(Self {
+                    transaction_version: txn_version,
+                    write_set_change_index,
+                    storage_id,
+                    owner_address,
+                    asset_type,
+                    is_primary,
+                    is_frozen: false,
+                    amount: BigDecimal::zero(),
+                    transaction_timestamp: txn_timestamp,
+                    token_standard: TokenStandard::V2.to_string(),
+                }));
             }
         }
 
@@ -612,6 +638,117 @@ impl From<CurrentUnifiedFungibleAssetBalance> for PostgresCurrentUnifiedFungible
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::processors::fungible_asset::fungible_asset_models::v2_fungible_asset_utils::FungibleAssetStoreDeletionEvent;
+    use ahash::AHashMap;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::MoveStructTag;
+
+    fn object_core_write(address: &str, owner: &str) -> WriteResource {
+        WriteResource {
+            address: address.to_string(),
+            state_key_hash: vec![],
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectCore".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectCore".to_string(),
+            data: format!(
+                r#"{{"allow_ungated_transfer":true,"guid_creation_num":"0","owner":"{owner}"}}"#
+            ),
+        }
+    }
+
+    fn deletion_event(store: &str, owner: &str, metadata: &str) -> FungibleAssetStoreDeletionEvent {
+        FungibleAssetStoreDeletionEvent {
+            metadata: metadata.to_string(),
+            owner: owner.to_string(),
+            store: store.to_string(),
+        }
+    }
+
+    #[test]
+    fn object_core_write_zeros_deleted_store_balance() {
+        let owner = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let metadata = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
+        let store = "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
+        let wr = object_core_write(store, owner);
+        let mut deleted = AHashMap::new();
+        deleted.insert(
+            standardize_address(store),
+            deletion_event(store, owner, metadata),
+        );
+
+        let balance = FungibleAssetBalance::get_v2_from_write_resource(
+            &wr,
+            3,
+            42,
+            chrono::NaiveDateTime::default(),
+            &AHashMap::new(),
+            &deleted,
+        )
+        .unwrap()
+        .expect("ObjectCore write after store deletion must emit a zero-balance row");
+
+        assert_eq!(balance.transaction_version, 42);
+        assert_eq!(balance.write_set_change_index, 3);
+        assert_eq!(balance.storage_id, standardize_address(store));
+        assert_eq!(balance.owner_address, standardize_address(owner));
+        assert_eq!(balance.asset_type, standardize_address(metadata));
+        assert_eq!(balance.amount, BigDecimal::zero());
+        assert!(balance.is_primary);
+        assert!(!balance.is_frozen);
+        assert_eq!(balance.token_standard, "v2");
+    }
+
+    #[test]
+    fn object_core_write_without_deletion_event_is_ignored() {
+        let owner = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let store = "0x5d2c93f23a3964409e8755a179417c4ef842166f6cc41e1416e2c705a02861a6";
+        let wr = object_core_write(store, owner);
+
+        let balance = FungibleAssetBalance::get_v2_from_write_resource(
+            &wr,
+            0,
+            1,
+            chrono::NaiveDateTime::default(),
+            &AHashMap::new(),
+            &AHashMap::new(),
+        )
+        .unwrap();
+
+        assert!(
+            balance.is_none(),
+            "plain ObjectCore writes must not invent a fungible balance"
+        );
+    }
+
+    #[test]
+    fn object_core_write_keeps_secondary_store_flag() {
+        let owner = "0xfd2984f201abdbf30ccd0ec5c2f2357789222c0bbd3c68999acfebe188fdc09d";
+        let metadata = "0x5dade62351d0b07340ff41763451e05ca2193de583bb3d762193462161888309";
+        let store = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let wr = object_core_write(store, owner);
+        let mut deleted = AHashMap::new();
+        deleted.insert(
+            standardize_address(store),
+            deletion_event(store, owner, metadata),
+        );
+
+        let balance = FungibleAssetBalance::get_v2_from_write_resource(
+            &wr,
+            1,
+            7,
+            chrono::NaiveDateTime::default(),
+            &AHashMap::new(),
+            &deleted,
+        )
+        .unwrap()
+        .expect("deleted secondary store must still emit a zero-balance row");
+
+        assert!(!balance.is_primary);
+        assert_eq!(balance.amount, BigDecimal::zero());
+    }
 
     #[test]
     fn test_is_primary() {
