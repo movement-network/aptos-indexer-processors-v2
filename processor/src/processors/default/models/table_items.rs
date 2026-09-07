@@ -197,7 +197,10 @@ pub struct TableMetadata {
 impl TableMetadata {
     pub fn from_write_table_item(table_item: &WriteTableItem) -> Self {
         Self {
-            handle: table_item.handle.to_string(),
+            // Proto table handles are not always 64-char padded. table_items /
+            // current_table_items already standardize; keep this PK in the same
+            // form so joins on handle succeed.
+            handle: standardize_address(&table_item.handle.to_string()),
             key_type: table_item.data.as_ref().unwrap().key_type.clone(),
             value_type: table_item.data.as_ref().unwrap().value_type.clone(),
         }
@@ -313,5 +316,49 @@ impl From<TableMetadata> for PostgresTableMetadata {
             key_type: base_item.key_type,
             value_type: base_item.value_type,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::{
+        WriteTableData, WriteTableItem,
+    };
+
+    fn write_table_item(handle: &str) -> WriteTableItem {
+        WriteTableItem {
+            handle: handle.to_string(),
+            key: "0x1".to_string(),
+            data: Some(WriteTableData {
+                key: "\"1\"".to_string(),
+                key_type: "u64".to_string(),
+                value: "\"2\"".to_string(),
+                value_type: "u64".to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn table_metadata_handle_matches_standardized_table_item_handle() {
+        let raw_handle = "0xabc";
+        assert_ne!(
+            standardize_address(raw_handle),
+            raw_handle,
+            "precondition: proto table handles can be shorter than 64 hex chars"
+        );
+
+        let item = write_table_item(raw_handle);
+        let (table_item, current) =
+            TableItem::from_write_table_item(&item, 0, 1, 1, chrono::NaiveDateTime::default());
+        let metadata = TableMetadata::from_write_table_item(&item);
+
+        let expected = standardize_address(raw_handle);
+        assert_eq!(table_item.table_handle, expected);
+        assert_eq!(current.table_handle, expected);
+        assert_eq!(metadata.handle, expected);
+        assert_eq!(metadata.key_type, "u64");
+        assert_eq!(metadata.value_type, "u64");
     }
 }
