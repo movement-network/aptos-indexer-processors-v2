@@ -105,83 +105,83 @@ pub async fn get_parquet_starting_version(
                 message: format!("Failed to query backfill_processor_status table. {e:?}"),
             })?;
 
-            // Return None if there is no checkpoint, if the backfill is old (complete), or if overwrite_checkpoint is true.
-            // Otherwise, return the checkpointed version + 1.
-            if !backfill_statuses.is_empty() {
-                // If the backfill is complete and overwrite_checkpoint is false, return the ending_version to end the backfill.
-                if backfill_statuses
-                    .iter()
-                    .all(|status| status.backfill_status == BackfillStatus::Complete)
-                    && !overwrite_checkpoint
-                {
-                    return Ok(*ending_version);
-                }
-                // If status is Complete or overwrite_checkpoint is true, this is the start of a new backfill job.
-                if *overwrite_checkpoint {
-                    // If the ending_version is provided, use it. If not, compute the ending_version from processor_status.last_success_version.
-                    let backfill_end_version = match *ending_version {
-                        Some(e) => Some(e as i64),
-                        None => get_min_processed_version_from_db(db_pool.clone(), table_names)
-                            .await?
-                            .map(|v| v as i64),
-                    };
-
-                    for backfill_status in backfill_statuses {
-                        let backfill_alias = backfill_status.backfill_alias.clone();
-
-                        let status = BackfillProcessorStatus {
-                            backfill_alias,
-                            backfill_status: BackfillStatus::InProgress,
-                            last_success_version: 0,
-                            last_transaction_timestamp: None,
-                            backfill_start_version: *initial_starting_version as i64,
-                            backfill_end_version,
-                        };
-                        execute_with_better_error(
-                            db_pool.clone(),
-                            diesel::insert_into(backfill_processor_status::table)
-                                .values(&status)
-                                .on_conflict(backfill_processor_status::backfill_alias)
-                                .do_update()
-                                .set((
-                                    backfill_processor_status::backfill_status
-                                        .eq(excluded(backfill_processor_status::backfill_status)),
-                                    backfill_processor_status::last_success_version.eq(excluded(
-                                        backfill_processor_status::last_success_version,
-                                    )),
-                                    backfill_processor_status::last_updated
-                                        .eq(excluded(backfill_processor_status::last_updated)),
-                                    backfill_processor_status::last_transaction_timestamp.eq(
-                                        excluded(
-                                            backfill_processor_status::last_transaction_timestamp,
-                                        ),
-                                    ),
-                                    backfill_processor_status::backfill_start_version.eq(excluded(
-                                        backfill_processor_status::backfill_start_version,
-                                    )),
-                                    backfill_processor_status::backfill_end_version.eq(excluded(
-                                        backfill_processor_status::backfill_end_version,
-                                    )),
-                                )),
-                        )
-                        .await?;
-                    }
-                    return Ok(Some(*initial_starting_version));
-                }
-
-                // `backfill_config.initial_starting_version` is NOT respected.
-                // Return the last success version + 1.
-                let min_version = backfill_statuses
-                    .iter()
-                    .map(|status| status.last_success_version as u64)
-                    .min()
-                    .unwrap()
-                    + 1;
-                log_ascii_warning(min_version);
-                Ok(Some(min_version))
-            } else {
-                Ok(Some(*initial_starting_version))
+            // Missing rows stay as None so a new table cannot be ignored.
+            // If every table has no checkpoint, start from the config version.
+            if backfill_statuses.iter().all(|status| status.is_none()) {
+                return Ok(Some(*initial_starting_version));
             }
+
+            // If every table has a Complete row and overwrite_checkpoint is false, end the backfill.
+            // A missing row is not Complete — that table still needs versions.
+            if all_backfill_tables_complete(
+                backfill_statuses
+                    .iter()
+                    .map(|status| status.as_ref().map(|s| &s.backfill_status)),
+            ) && !overwrite_checkpoint
+            {
+                return Ok(*ending_version);
+            }
+
+            // If overwrite_checkpoint is true, this is the start of a new backfill job.
+            if *overwrite_checkpoint {
+                // If the ending_version is provided, use it. If not, compute the ending_version from processor_status.last_success_version.
+                let backfill_end_version = match *ending_version {
+                    Some(e) => Some(e as i64),
+                    None => get_min_processed_version_from_db(db_pool.clone(), table_names)
+                        .await?
+                        .map(|v| v as i64),
+                };
+
+                for backfill_status in backfill_statuses.into_iter().flatten() {
+                    let backfill_alias = backfill_status.backfill_alias.clone();
+
+                    let status = BackfillProcessorStatus {
+                        backfill_alias,
+                        backfill_status: BackfillStatus::InProgress,
+                        last_success_version: 0,
+                        last_transaction_timestamp: None,
+                        backfill_start_version: *initial_starting_version as i64,
+                        backfill_end_version,
+                    };
+                    execute_with_better_error(
+                        db_pool.clone(),
+                        diesel::insert_into(backfill_processor_status::table)
+                            .values(&status)
+                            .on_conflict(backfill_processor_status::backfill_alias)
+                            .do_update()
+                            .set((
+                                backfill_processor_status::backfill_status
+                                    .eq(excluded(backfill_processor_status::backfill_status)),
+                                backfill_processor_status::last_success_version
+                                    .eq(excluded(backfill_processor_status::last_success_version)),
+                                backfill_processor_status::last_updated
+                                    .eq(excluded(backfill_processor_status::last_updated)),
+                                backfill_processor_status::last_transaction_timestamp.eq(excluded(
+                                    backfill_processor_status::last_transaction_timestamp,
+                                )),
+                                backfill_processor_status::backfill_start_version.eq(excluded(
+                                    backfill_processor_status::backfill_start_version,
+                                )),
+                                backfill_processor_status::backfill_end_version
+                                    .eq(excluded(backfill_processor_status::backfill_end_version)),
+                            )),
+                    )
+                    .await?;
+                }
+                return Ok(Some(*initial_starting_version));
+            }
+
+            // Present tables resume at last_success_version + 1.
+            // A missing table uses initial_starting_version so it cannot skip
+            // to another table's backfill watermark.
+            let min_version = min_backfill_resume_version(
+                backfill_statuses
+                    .iter()
+                    .map(|status| status.as_ref().map(|s| s.last_success_version as u64)),
+                *initial_starting_version,
+            );
+            log_ascii_warning(min_version);
+            Ok(Some(min_version))
         },
         ProcessorMode::Testing(TestingConfig {
             override_starting_version,
@@ -296,7 +296,7 @@ async fn get_parquet_backfill_statuses(
     db_pool: ArcDbPool,
     table_names: Vec<String>,
     backfill_id: String,
-) -> Result<Vec<BackfillProcessorStatusQuery>, ProcessorError> {
+) -> Result<Vec<Option<BackfillProcessorStatusQuery>>, ProcessorError> {
     let mut queries = Vec::new();
 
     // Spawn all queries concurrently with separate connections
@@ -322,29 +322,48 @@ async fn get_parquet_backfill_statuses(
     }
 
     let results = futures::future::join_all(queries).await;
+    collect_backfill_status_query_results(results)
+}
 
-    // Collect results and find the minimum processed version
-    let backfill_statuses = results
+/// Collect per-table `backfill_processor_status` query results.
+///
+/// A missing row (`Ok(None)`) is retained so a new or lagging table cannot be
+/// ignored. Query failures are propagated; silently dropping them would skip
+/// versions the same way as dropping a missing row.
+fn collect_backfill_status_query_results<T>(
+    results: impl IntoIterator<Item = Result<Option<T>, ProcessorError>>,
+) -> Result<Vec<Option<T>>, ProcessorError> {
+    results.into_iter().collect()
+}
+
+/// Resume version for a parquet multi-table backfill.
+///
+/// Present tables resume at `last_success_version + 1`. A missing table (`None`)
+/// uses `initial_starting_version` so it cannot skip to another table's watermark.
+fn min_backfill_resume_version(
+    last_success_versions: impl IntoIterator<Item = Option<u64>>,
+    initial_starting_version: u64,
+) -> u64 {
+    last_success_versions
         .into_iter()
-        .filter_map(|res| {
-            match res {
-                // If the result is `Ok`, proceed to return the status
-                Ok(Some(status)) => {
-                    // Return the version if the status contains a version
-                    Some(status)
-                },
-                // Handle specific cases where `Ok` contains `None` (no status found)
-                Ok(None) => None,
-                // TODO: If the result is an `Err`, what should we do?
-                Err(e) => {
-                    eprintln!("Error fetching processor status: {e:?}");
-                    None
-                },
-            }
-        })
-        .collect();
+        .map(|version| version.map_or(initial_starting_version, |v| v + 1))
+        .min()
+        .unwrap_or(initial_starting_version)
+}
 
-    Ok(backfill_statuses)
+/// True only when every table has a Complete backfill row.
+/// Missing rows are not complete — a new table still needs backfill.
+fn all_backfill_tables_complete<'a>(
+    statuses: impl IntoIterator<Item = Option<&'a BackfillStatus>>,
+) -> bool {
+    let mut saw_table = false;
+    for status in statuses {
+        saw_table = true;
+        if status != Some(&BackfillStatus::Complete) {
+            return false;
+        }
+    }
+    saw_table
 }
 
 #[cfg(test)]
@@ -371,6 +390,95 @@ mod tests {
     };
     use diesel_async::RunQueryDsl;
     use url::Url;
+
+    #[test]
+    fn backfill_status_all_tables_present_are_retained() {
+        let results = [Ok(Some(100u64)), Ok(Some(10)), Ok(Some(50))];
+        assert_eq!(
+            collect_backfill_status_query_results(results).unwrap(),
+            vec![Some(100), Some(10), Some(50)]
+        );
+    }
+
+    #[test]
+    fn backfill_status_missing_row_is_retained() {
+        // A new/lagging table has no backfill_processor_status row. Keeping
+        // None prevents resume at another table's watermark (e.g. 100 + 1),
+        // which would skip versions 0..=100 for the missing table forever.
+        let results = [Ok(Some(100u64)), Ok(None), Ok(Some(50))];
+        assert_eq!(
+            collect_backfill_status_query_results(results).unwrap(),
+            vec![Some(100), None, Some(50)]
+        );
+    }
+
+    #[test]
+    fn backfill_status_query_error_is_propagated() {
+        let results = [
+            Ok(Some(100u64)),
+            Err(ProcessorError::ProcessError {
+                message: "db down".to_string(),
+            }),
+            Ok(Some(50)),
+        ];
+        assert!(collect_backfill_status_query_results(results).is_err());
+    }
+
+    #[test]
+    fn backfill_status_empty_results_is_empty() {
+        let results: [Result<Option<u64>, ProcessorError>; 0] = [];
+        assert_eq!(
+            collect_backfill_status_query_results(results)
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn min_backfill_resume_all_tables_present_uses_min_plus_one() {
+        let versions = [Some(100u64), Some(10), Some(50)];
+        assert_eq!(min_backfill_resume_version(versions, 0), 11);
+    }
+
+    #[test]
+    fn min_backfill_resume_missing_table_uses_initial_start() {
+        // Tables A/B checkpointed at 100; table C has no row. Resume must be
+        // the config start (0), not 101. Otherwise C never sees 0..=100.
+        let versions = [Some(100u64), None, Some(50)];
+        assert_eq!(min_backfill_resume_version(versions, 0), 0);
+    }
+
+    #[test]
+    fn min_backfill_resume_missing_table_respects_nonzero_initial() {
+        let versions = [Some(100u64), None];
+        assert_eq!(min_backfill_resume_version(versions, 7), 7);
+    }
+
+    #[test]
+    fn min_backfill_resume_all_missing_uses_initial_start() {
+        let versions = [None, None];
+        assert_eq!(min_backfill_resume_version(versions, 3), 3);
+    }
+
+    #[test]
+    fn all_backfill_tables_complete_requires_every_row() {
+        assert!(all_backfill_tables_complete([
+            Some(&BackfillStatus::Complete),
+            Some(&BackfillStatus::Complete),
+        ]));
+        assert!(!all_backfill_tables_complete([
+            Some(&BackfillStatus::Complete),
+            None,
+        ]));
+        assert!(!all_backfill_tables_complete([
+            Some(&BackfillStatus::Complete),
+            Some(&BackfillStatus::InProgress),
+        ]));
+        assert!(!all_backfill_tables_complete([None, None]));
+        let no_tables: [Option<&BackfillStatus>; 0] = [];
+        assert!(!all_backfill_tables_complete(no_tables));
+    }
 
     fn create_indexer_config(
         db_url: String,
@@ -575,6 +683,59 @@ mod tests {
 
         assert_eq!(starting_version, Some(last_success_version as u64 + 1));
         assert_eq!(end_version, Some(20));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::needless_return)]
+    async fn test_backfill_missing_table_does_not_skip_to_other_table_watermark() {
+        // Only one of N parquet tables has a backfill_processor_status row.
+        // The missing tables must pull the starting version back to the config
+        // initial (0), not the checkpointed table's last_success + 1.
+        let backfill_id = "backfill_id".to_string();
+        let mut db = PostgresTestDatabase::new();
+        db.setup().await.unwrap();
+        let conn_pool = new_db_pool(db.get_db_url().as_str(), Some(10))
+            .await
+            .expect("Failed to create connection pool");
+        run_migrations(db.get_db_url(), conn_pool.clone(), MIGRATIONS).await;
+
+        let indexer_processor_config = create_indexer_config(
+            db.get_db_url(),
+            ProcessorMode::Backfill(BackfillConfig {
+                backfill_id: backfill_id.clone(),
+                initial_starting_version: 0,
+                ending_version: Some(20),
+                overwrite_checkpoint: false,
+            }),
+        );
+        let table_names = indexer_processor_config
+            .processor_config
+            .get_processor_status_table_names()
+            .unwrap();
+        assert!(
+            table_names.len() > 1,
+            "test requires a multi-table parquet processor"
+        );
+
+        diesel::insert_into(crate::schema::backfill_processor_status::table)
+            .values(BackfillProcessorStatus {
+                backfill_alias: format!("{}_{backfill_id}", table_names[0]),
+                backfill_status: BackfillStatus::InProgress,
+                last_success_version: 100,
+                last_transaction_timestamp: None,
+                backfill_start_version: 0,
+                backfill_end_version: Some(20),
+            })
+            .execute(&mut conn_pool.clone().get().await.unwrap())
+            .await
+            .expect("Failed to insert backfill processor status");
+
+        let starting_version =
+            get_parquet_starting_version(&indexer_processor_config, conn_pool.clone())
+                .await
+                .unwrap();
+
+        assert_eq!(starting_version, Some(0));
     }
 
     #[tokio::test]
