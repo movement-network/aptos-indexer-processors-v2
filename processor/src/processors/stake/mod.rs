@@ -125,8 +125,7 @@ pub async fn parse_stake_data(
                     query_retries,
                     query_retry_delay_ms,
                 )
-                .await
-                .unwrap();
+                .await?;
             all_delegator_balances.append(&mut delegator_balances);
             all_current_delegator_balances.extend(current_delegator_balances);
 
