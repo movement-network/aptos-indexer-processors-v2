@@ -525,13 +525,7 @@ mod tests {
             .naive_utc();
 
         let activity = TokenActivityV2::get_nft_v2_from_parsed_event(
-            &event,
-            1,
-            ts,
-            0,
-            &None,
-            &metadata,
-            sender,
+            &event, 1, ts, 0, &None, &metadata, sender,
         )
         .await
         .unwrap()
