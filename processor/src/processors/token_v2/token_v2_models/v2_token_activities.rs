@@ -123,12 +123,13 @@ impl TokenActivityV2 {
                         event_type: event_type.clone(),
                     },
                     V2TokenEvent::TokenMutation(inner) => TokenActivityHelperV2 {
-                        from_address: Some(inner.token_address.clone()),
+                        // whoever submitted the mutation event is the from address
+                        from_address: Some(sender.to_owned()),
                         to_address: None,
                         token_amount: BigDecimal::zero(),
                         before_value: Some(inner.old_value.clone()),
                         after_value: Some(inner.new_value.clone()),
-                        event_type: "0x4::collection::MutationEvent".to_string(),
+                        event_type: "0x4::token::MutationEvent".to_string(),
                     },
                     V2TokenEvent::BurnEvent(_) => TokenActivityHelperV2 {
                         from_address: Some(object_core.get_owner_address()),
@@ -484,5 +485,56 @@ impl From<TokenActivityV2> for PostgresTokenActivityV2 {
             is_fungible_v2: raw_item.is_fungible_v2,
             transaction_timestamp: raw_item.transaction_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::objects::v2_object_utils::ObjectAggregatedData;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::EventKey;
+    use chrono::DateTime;
+
+    #[tokio::test]
+    async fn token_mutation_v2_uses_sender_not_token_address() {
+        let token_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let sender = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        let event = Event {
+            key: Some(EventKey {
+                creation_number: 0,
+                account_address: token_address.to_string(),
+            }),
+            sequence_number: 0,
+            r#type: None,
+            type_str: "0x4::token::Mutation".to_string(),
+            data: serde_json::json!({
+                "token_address": token_address,
+                "mutated_field_name": "uri",
+                "old_value": "old",
+                "new_value": "new",
+            })
+            .to_string(),
+        };
+
+        let mut metadata = ObjectAggregatedDataMapping::new();
+        metadata.insert(token_address.to_string(), ObjectAggregatedData::default());
+
+        let ts = DateTime::from_timestamp(1_700_000_000, 0)
+            .unwrap()
+            .naive_utc();
+
+        let activity = TokenActivityV2::get_nft_v2_from_parsed_event(
+            &event, 1, ts, 0, &None, &metadata, sender,
+        )
+        .await
+        .unwrap()
+        .expect("module Mutation event should produce an activity row");
+
+        assert_eq!(activity.from_address.as_deref(), Some(sender));
+        assert_eq!(activity.type_, "0x4::token::MutationEvent");
+        assert_eq!(activity.token_data_id, token_address);
+        assert_eq!(activity.before_value.as_deref(), Some("old"));
+        assert_eq!(activity.after_value.as_deref(), Some("new"));
     }
 }
