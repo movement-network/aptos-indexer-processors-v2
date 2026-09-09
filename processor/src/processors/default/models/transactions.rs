@@ -429,8 +429,8 @@ mod tests {
         transaction::v1::{
             transaction::{TransactionType, TxnData},
             write_set_change::{Change, Type as WriteSetChangeTypeEnum},
-            BlockEpilogueTransaction, MoveStructTag, Transaction as TransactionPB,
-            TransactionInfo, WriteResource, WriteSetChange as WriteSetChangePB,
+            BlockEpilogueTransaction, MoveStructTag, Transaction as TransactionPB, TransactionInfo,
+            WriteResource, WriteSetChange as WriteSetChangePB,
         },
         util::timestamp::Timestamp,
     };
@@ -490,9 +490,6 @@ mod tests {
             "0x0000000000000000000000000000000000000000000000000000000000000001"
         );
         assert_eq!(write_set_changes[0].change_type, "write_resource");
-        assert!(matches!(
-            wsc_details[0],
-            WriteSetChangeDetail::Resource(_)
-        ));
+        assert!(matches!(wsc_details[0], WriteSetChangeDetail::Resource(_)));
     }
 }
