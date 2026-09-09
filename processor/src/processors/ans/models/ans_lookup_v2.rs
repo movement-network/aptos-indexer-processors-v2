@@ -350,9 +350,7 @@ mod tests {
             token_standard: token_standard.to_string(),
             registered_address: None,
             last_transaction_version: 1,
-            expiration_timestamp: chrono::DateTime::from_timestamp(0, 0)
-                .unwrap()
-                .naive_utc(),
+            expiration_timestamp: chrono::DateTime::from_timestamp(0, 0).unwrap().naive_utc(),
             token_name: String::new(),
             is_deleted: false,
             subdomain_expiration_policy: None,
