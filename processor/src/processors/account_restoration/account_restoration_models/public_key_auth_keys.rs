@@ -412,7 +412,7 @@ mod tests {
             old_auth_key: vec![0; 32],
             public_key,
             public_key_scheme: MULTI_ED25519_SCHEME,
-            verified_public_key_bit_map: vec![0xc0, 0x00, 0x00, 0x00],
+            verified_public_key_bit_map: vec![0xC0, 0x00, 0x00, 0x00],
         };
 
         let helper = PublicKeyAuthKeyHelper::create_helper_from_key_rotation_event(&event, 1)
