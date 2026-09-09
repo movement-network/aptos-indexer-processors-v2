@@ -303,22 +303,34 @@ impl Transaction {
                     wsc_detail,
                 )
             },
-            TxnData::BlockEpilogue(_) => (
-                Self::from_transaction_info_with_data(
-                    transaction_info,
-                    None,
-                    None,
+            TxnData::BlockEpilogue(_) => {
+                // Block epilogue txns carry write-set changes (e.g. block gas
+                // limit / BlockResource updates). Skipping them silently drops
+                // those rows from write_set_changes, move_resources, and
+                // move_modules on the parquet default processor.
+                let (wsc, wsc_detail) = WriteSetChangeModel::from_write_set_changes(
+                    &transaction_info.changes,
                     txn_version,
-                    transaction_type,
-                    0,
                     block_height,
-                    epoch,
                     block_timestamp,
-                    txn_size_info,
-                ),
-                vec![],
-                vec![],
-            ),
+                );
+                (
+                    Self::from_transaction_info_with_data(
+                        transaction_info,
+                        None,
+                        None,
+                        txn_version,
+                        transaction_type,
+                        0,
+                        block_height,
+                        epoch,
+                        block_timestamp,
+                        txn_size_info,
+                    ),
+                    wsc,
+                    wsc_detail,
+                )
+            },
         }
     }
 
@@ -407,5 +419,77 @@ impl From<Transaction> for ParquetTransaction {
             txn_total_bytes: transaction.txn_total_bytes,
             block_timestamp: transaction.block_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::{
+        transaction::v1::{
+            transaction::{TransactionType, TxnData},
+            write_set_change::{Change, Type as WriteSetChangeTypeEnum},
+            BlockEpilogueTransaction, MoveStructTag, Transaction as TransactionPB, TransactionInfo,
+            WriteResource, WriteSetChange as WriteSetChangePB,
+        },
+        util::timestamp::Timestamp,
+    };
+
+    fn epilogue_txn_with_write_resource(address: &str) -> TransactionPB {
+        TransactionPB {
+            timestamp: Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            version: 7_250_088_688,
+            info: Some(TransactionInfo {
+                hash: vec![0u8; 32],
+                state_change_hash: vec![0u8; 32],
+                event_root_hash: vec![0u8; 32],
+                state_checkpoint_hash: None,
+                gas_used: 0,
+                success: true,
+                vm_status: String::new(),
+                accumulator_root_hash: vec![0u8; 32],
+                changes: vec![WriteSetChangePB {
+                    r#type: WriteSetChangeTypeEnum::WriteResource as i32,
+                    change: Some(Change::WriteResource(WriteResource {
+                        address: address.to_string(),
+                        state_key_hash: vec![0u8; 32],
+                        r#type: Some(MoveStructTag {
+                            address: "0x1".to_string(),
+                            module: "block".to_string(),
+                            name: "BlockResource".to_string(),
+                            generic_type_params: vec![],
+                        }),
+                        type_str: "0x1::block::BlockResource".to_string(),
+                        data: r#"{"epoch_interval":"1","height":"1"}"#.to_string(),
+                    })),
+                }],
+            }),
+            epoch: 1,
+            block_height: 1,
+            r#type: TransactionType::BlockEpilogue as i32,
+            size_info: None,
+            txn_data: Some(TxnData::BlockEpilogue(BlockEpilogueTransaction {
+                block_end_info: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn block_epilogue_indexes_write_set_changes() {
+        let txn = epilogue_txn_with_write_resource("0x1");
+        let (parsed, write_set_changes, wsc_details) = TransactionModel::from_transaction(&txn);
+
+        assert_eq!(parsed.num_write_set_changes, 1);
+        assert_eq!(write_set_changes.len(), 1);
+        assert_eq!(wsc_details.len(), 1);
+        assert_eq!(
+            write_set_changes[0].resource_address,
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+        );
+        assert_eq!(write_set_changes[0].change_type, "write_resource");
+        assert!(matches!(wsc_details[0], WriteSetChangeDetail::Resource(_)));
     }
 }
