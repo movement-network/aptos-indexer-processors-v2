@@ -26,7 +26,7 @@ use aptos_indexer_processor_sdk::{
 pub async fn process_objects(
     transactions: Vec<Transaction>,
     db_context: &mut Option<DbContext<'_>>,
-) -> (Vec<Object>, Vec<CurrentObject>) {
+) -> anyhow::Result<(Vec<Object>, Vec<CurrentObject>)> {
     // Moving object handling here because we need a single object
     // map through transactions for lookups
     let mut all_objects = vec![];
@@ -93,15 +93,13 @@ pub async fn process_objects(
             let index: i64 = index as i64;
             match wsc.change.as_ref().unwrap() {
                 Change::WriteResource(inner) => {
-                    if let Some((object, current_object)) = &Object::from_write_resource(
+                    if let Some((object, current_object)) = Object::from_write_resource(
                         inner,
                         txn_version,
                         index,
                         &object_metadata_helper,
                         txn_timestamp,
-                    )
-                    .unwrap()
-                    {
+                    )? {
                         all_objects.push(object.clone());
                         all_current_objects
                             .insert(object.object_address.clone(), current_object.clone());
@@ -118,8 +116,7 @@ pub async fn process_objects(
                         db_context,
                         txn_timestamp,
                     )
-                    .await
-                    .unwrap()
+                    .await?
                     {
                         all_objects.push(object.clone());
                         all_current_objects
@@ -137,5 +134,5 @@ pub async fn process_objects(
         .collect::<Vec<CurrentObject>>();
     all_current_objects.sort_by(|a, b| a.object_address.cmp(&b.object_address));
 
-    (all_objects, all_current_objects)
+    Ok((all_objects, all_current_objects))
 }

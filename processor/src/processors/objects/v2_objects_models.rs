@@ -26,6 +26,10 @@ use parquet_derive::ParquetRecordWriter;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
+fn is_current_object_not_found(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<diesel::result::Error>() == Some(&diesel::result::Error::NotFound)
+}
+
 const DELETED_RESOURCE_OWNER_ADDRESS: &str = "Unknown";
 
 #[derive(Clone, Debug, Deserialize, FieldCount, Serialize)]
@@ -129,127 +133,156 @@ impl Object {
         db_context: &mut Option<DbContext<'_>>,
         block_timestamp: chrono::NaiveDateTime,
     ) -> anyhow::Result<Option<(Self, CurrentObject)>> {
-        if delete_resource.type_str == "0x1::object::ObjectGroup" {
-            let resource = match MoveResource::from_delete_resource(
-                delete_resource,
-                0, // Placeholder, this isn't used anyway
-                txn_version,
-                0, // Placeholder, this isn't used anyway
-                block_timestamp,
-            ) {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    error!("No resource found for transaction version {}", txn_version);
-                    return Ok(None);
-                },
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "Error getting resource from delete resource: {}",
-                        e
-                    ))
-                },
-            };
+        if delete_resource.type_str != "0x1::object::ObjectGroup" {
+            return Ok(None);
+        }
 
-            // Add a logid here to handle None conn
-            if db_context.is_none() {
-                // This is a hack to prevent the program for parquet
-                Ok(Some((
-                    Self {
-                        transaction_version: txn_version,
-                        write_set_change_index,
-                        object_address: resource.resource_address.clone(),
-                        owner_address: DELETED_RESOURCE_OWNER_ADDRESS.to_string(),
-                        state_key_hash: resource.state_key_hash.clone(),
-                        guid_creation_num: BigDecimal::default(),
-                        allow_ungated_transfer: false,
-                        is_deleted: true,
-                        untransferrable: false,
-                        block_timestamp,
-                    },
-                    CurrentObject {
-                        object_address: resource.resource_address.clone(),
-                        owner_address: DELETED_RESOURCE_OWNER_ADDRESS.to_string(),
-                        state_key_hash: resource.state_key_hash.clone(),
-                        last_guid_creation_num: BigDecimal::default(),
-                        allow_ungated_transfer: false,
-                        last_transaction_version: txn_version,
-                        is_deleted: true,
-                        untransferrable: false,
-                        block_timestamp,
-                    },
-                )))
-            } else {
-                let previous_object = if let Some(object) =
-                    object_mapping.get(&resource.resource_address)
-                {
-                    object.clone()
-                } else if let Some(db_context) = db_context {
-                    match Self::get_current_object(
-                        &mut db_context.conn,
-                        &resource.resource_address,
-                        db_context.query_retries,
-                        db_context.query_retry_delay_ms,
-                    )
-                    .await
-                    {
-                        Ok(object) => object,
-                        Err(_) => {
-                            tracing::error!(
-                            transaction_version = txn_version,
-                            lookup_key = &resource.resource_address,
-                            "Missing current_object for object_address: {}. You probably should backfill db.",
-                            resource.resource_address,
-                        );
-                            return Ok(None);
-                        },
-                    }
-                } else {
-                    tracing::error!(
-                        transaction_version = txn_version,
-                        lookup_key = &resource.resource_address,
-                        "Connection to DB is missing. You may need to investigate",
-                    );
-                    return Ok(None);
-                };
-                Ok(Some((
-                    Self {
-                        transaction_version: txn_version,
-                        write_set_change_index,
-                        object_address: resource.resource_address.clone(),
-                        owner_address: previous_object.owner_address.clone(),
-                        state_key_hash: resource.state_key_hash.clone(),
-                        guid_creation_num: previous_object.last_guid_creation_num.clone(),
-                        allow_ungated_transfer: previous_object.allow_ungated_transfer,
-                        is_deleted: true,
-                        untransferrable: previous_object.untransferrable,
-                        block_timestamp,
-                    },
-                    CurrentObject {
-                        object_address: resource.resource_address.clone(),
-                        owner_address: previous_object.owner_address.clone(),
-                        state_key_hash: resource.state_key_hash,
-                        last_guid_creation_num: previous_object.last_guid_creation_num.clone(),
-                        allow_ungated_transfer: previous_object.allow_ungated_transfer,
-                        last_transaction_version: txn_version,
-                        is_deleted: true,
-                        untransferrable: previous_object.untransferrable,
-                        block_timestamp,
-                    },
-                )))
-            }
-        } else {
-            Ok(None)
+        let resource = match MoveResource::from_delete_resource(
+            delete_resource,
+            0, // Placeholder, this isn't used anyway
+            txn_version,
+            0, // Placeholder, this isn't used anyway
+            block_timestamp,
+        ) {
+            Ok(Some(resource)) => resource,
+            Ok(None) => {
+                error!("No resource found for transaction version {}", txn_version);
+                return Ok(None);
+            },
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Error getting resource from delete resource: {}",
+                    e
+                ))
+            },
+        };
+
+        // ObjectGroup DeleteResource is authoritative: persist is_deleted=true even
+        // when current_objects is missing (backfill hole). Transient DB errors are
+        // returned so the extractor fails and the checkpoint does not advance.
+        let previous_object = Self::lookup_previous_object(
+            &resource.resource_address,
+            object_mapping,
+            db_context,
+            txn_version,
+        )
+        .await?;
+
+        Ok(Some(Self::deleted_object_pair(
+            &resource,
+            previous_object.as_ref(),
+            txn_version,
+            write_set_change_index,
+            block_timestamp,
+        )))
+    }
+
+    /// In-batch map first, then current_objects. `None` means "use fallback owner"
+    /// (parquet / missing row), not "drop the delete".
+    async fn lookup_previous_object(
+        object_address: &str,
+        object_mapping: &AHashMap<CurrentObjectPK, CurrentObject>,
+        db_context: &mut Option<DbContext<'_>>,
+        txn_version: i64,
+    ) -> anyhow::Result<Option<CurrentObject>> {
+        if let Some(object) = object_mapping.get(object_address) {
+            return Ok(Some(object.clone()));
+        }
+        let Some(db_context) = db_context else {
+            return Ok(None);
+        };
+        Self::previous_object_from_lookup_result(
+            Self::get_current_object(
+                &mut db_context.conn,
+                object_address,
+                db_context.query_retries,
+                db_context.query_retry_delay_ms,
+            )
+            .await,
+            object_address,
+            txn_version,
+        )
+    }
+
+    fn previous_object_from_lookup_result(
+        result: anyhow::Result<CurrentObject>,
+        object_address: &str,
+        txn_version: i64,
+    ) -> anyhow::Result<Option<CurrentObject>> {
+        match result {
+            Ok(object) => Ok(Some(object)),
+            Err(e) if is_current_object_not_found(&e) => {
+                tracing::error!(
+                    transaction_version = txn_version,
+                    lookup_key = object_address,
+                    "Missing current_object for object_address: {object_address}. Persisting ObjectGroup delete with fallback owner so the delete is not dropped.",
+                );
+                Ok(None)
+            },
+            Err(e) => Err(anyhow::anyhow!(
+                "Failed to look up current_object for {object_address} at version {txn_version}: {e:#}"
+            )),
         }
     }
 
+    fn deleted_object_pair(
+        resource: &MoveResource,
+        previous: Option<&CurrentObject>,
+        txn_version: i64,
+        write_set_change_index: i64,
+        block_timestamp: chrono::NaiveDateTime,
+    ) -> (Self, CurrentObject) {
+        let (owner_address, guid_creation_num, allow_ungated_transfer, untransferrable) =
+            match previous {
+                Some(prev) => (
+                    prev.owner_address.clone(),
+                    prev.last_guid_creation_num.clone(),
+                    prev.allow_ungated_transfer,
+                    prev.untransferrable,
+                ),
+                None => (
+                    DELETED_RESOURCE_OWNER_ADDRESS.to_string(),
+                    BigDecimal::default(),
+                    false,
+                    false,
+                ),
+            };
+
+        (
+            Self {
+                transaction_version: txn_version,
+                write_set_change_index,
+                object_address: resource.resource_address.clone(),
+                owner_address: owner_address.clone(),
+                state_key_hash: resource.state_key_hash.clone(),
+                guid_creation_num: guid_creation_num.clone(),
+                allow_ungated_transfer,
+                is_deleted: true,
+                untransferrable,
+                block_timestamp,
+            },
+            CurrentObject {
+                object_address: resource.resource_address.clone(),
+                owner_address,
+                state_key_hash: resource.state_key_hash.clone(),
+                last_guid_creation_num: guid_creation_num,
+                allow_ungated_transfer,
+                last_transaction_version: txn_version,
+                is_deleted: true,
+                untransferrable,
+                block_timestamp,
+            },
+        )
+    }
+
     /// This is actually not great because object owner can change. The best we can do now though.
-    /// This will loop forever until we get the object from the db
     pub async fn get_current_object(
         conn: &mut DbPoolConnection<'_>,
         object_address: &str,
         query_retries: u32,
         query_retry_delay_ms: u64,
     ) -> anyhow::Result<CurrentObject> {
+        let mut last_error = None;
         let mut tried = 0;
         while tried < query_retries {
             tried += 1;
@@ -267,7 +300,8 @@ impl Object {
                         block_timestamp: chrono::NaiveDateTime::default(), // this won't be used
                     });
                 },
-                Err(_) => {
+                Err(e) => {
+                    last_error = Some(e);
                     if tried < query_retries {
                         tokio::time::sleep(std::time::Duration::from_millis(query_retry_delay_ms))
                             .await;
@@ -275,7 +309,9 @@ impl Object {
                 },
             }
         }
-        Err(anyhow::anyhow!("Failed to get object owner"))
+        Err(last_error
+            .map(Into::into)
+            .unwrap_or_else(|| anyhow::anyhow!("Failed to get object owner")))
     }
 }
 
@@ -438,5 +474,150 @@ impl From<CurrentObject> for PostgresCurrentObject {
             is_deleted: raw.is_deleted,
             untransferrable: raw.untransferrable,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_indexer_processor_sdk::aptos_protos::transaction::v1::MoveStructTag;
+    use chrono::NaiveDateTime;
+
+    fn object_group_delete(address: &str) -> DeleteResource {
+        DeleteResource {
+            address: address.to_string(),
+            state_key_hash: hex::decode(
+                "d03f63d32c154a084e982a5fe910ef8e5d692d4c9e9380eb96192335adf32b83",
+            )
+            .unwrap(),
+            r#type: Some(MoveStructTag {
+                address: "0x1".to_string(),
+                module: "object".to_string(),
+                name: "ObjectGroup".to_string(),
+                generic_type_params: vec![],
+            }),
+            type_str: "0x1::object::ObjectGroup".to_string(),
+        }
+    }
+
+    fn timestamp() -> NaiveDateTime {
+        NaiveDateTime::default()
+    }
+
+    fn sample_current_object(address: &str, owner: &str) -> CurrentObject {
+        CurrentObject {
+            object_address: address.to_string(),
+            owner_address: owner.to_string(),
+            state_key_hash: "0xabc".to_string(),
+            allow_ungated_transfer: true,
+            last_guid_creation_num: BigDecimal::from(7),
+            last_transaction_version: 1,
+            is_deleted: false,
+            untransferrable: true,
+            block_timestamp: timestamp(),
+        }
+    }
+
+    #[tokio::test]
+    async fn object_group_delete_without_prior_row_is_persisted() {
+        let delete = object_group_delete(
+            "0x1ac3cb52493947623cd727e2db9e4cfd828d5f9cd264920d253828276a5e314e",
+        );
+        let result =
+            Object::from_delete_resource(&delete, 42, 7, &AHashMap::new(), &mut None, timestamp())
+                .await
+                .unwrap();
+
+        let (object, current) = result.expect("ObjectGroup delete must not be skipped");
+        assert!(object.is_deleted);
+        assert!(current.is_deleted);
+        assert_eq!(object.owner_address, DELETED_RESOURCE_OWNER_ADDRESS);
+        assert_eq!(current.owner_address, DELETED_RESOURCE_OWNER_ADDRESS);
+        assert_eq!(object.transaction_version, 42);
+        assert_eq!(current.last_transaction_version, 42);
+        assert_eq!(
+            object.object_address,
+            "0x1ac3cb52493947623cd727e2db9e4cfd828d5f9cd264920d253828276a5e314e"
+        );
+    }
+
+    #[tokio::test]
+    async fn object_group_delete_uses_in_batch_previous_object() {
+        let address = "0x1ac3cb52493947623cd727e2db9e4cfd828d5f9cd264920d253828276a5e314e";
+        let owner = "0x3fda2b751a0d209e17069ae72ccde256efeaad39e5403ea0e65ef5dcebdf6763";
+        let delete = object_group_delete(address);
+        let mut mapping = AHashMap::new();
+        mapping.insert(address.to_string(), sample_current_object(address, owner));
+
+        let (object, current) =
+            Object::from_delete_resource(&delete, 99, 1, &mapping, &mut None, timestamp())
+                .await
+                .unwrap()
+                .expect("mapped ObjectGroup delete must be persisted");
+
+        assert!(object.is_deleted);
+        assert!(current.is_deleted);
+        assert_eq!(object.owner_address, owner);
+        assert_eq!(current.owner_address, owner);
+        assert_eq!(object.guid_creation_num, BigDecimal::from(7));
+        assert!(object.allow_ungated_transfer);
+        assert!(object.untransferrable);
+    }
+
+    #[tokio::test]
+    async fn non_object_group_delete_is_ignored() {
+        let mut delete = object_group_delete(
+            "0x1ac3cb52493947623cd727e2db9e4cfd828d5f9cd264920d253828276a5e314e",
+        );
+        delete.type_str = "0x1::coin::CoinStore".to_string();
+
+        let result =
+            Object::from_delete_resource(&delete, 1, 0, &AHashMap::new(), &mut None, timestamp())
+                .await
+                .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn missing_current_object_row_does_not_drop_delete() {
+        let err = anyhow::Error::from(diesel::result::Error::NotFound);
+        let previous = Object::previous_object_from_lookup_result(Err(err), "0xabc", 10).unwrap();
+        assert!(
+            previous.is_none(),
+            "NotFound must yield fallback previous object, not skip"
+        );
+    }
+
+    #[test]
+    fn transient_lookup_error_fails_the_batch() {
+        let err = anyhow::anyhow!("connection reset");
+        let result = Object::previous_object_from_lookup_result(Err(err), "0xabc", 10);
+        assert!(
+            result.is_err(),
+            "transient DB errors must fail the batch so the checkpoint does not advance"
+        );
+    }
+
+    #[test]
+    fn deleted_object_pair_marks_deleted_with_fallback_owner() {
+        let resource = MoveResource {
+            txn_version: 5,
+            write_set_change_index: 0,
+            block_height: 0,
+            fun: "ObjectGroup".to_string(),
+            resource_type: "0x1::object::ObjectGroup".to_string(),
+            resource_address: "0xabc".to_string(),
+            module: "object".to_string(),
+            generic_type_params: None,
+            data: None,
+            is_deleted: true,
+            state_key_hash: "0xdef".to_string(),
+            block_timestamp: timestamp(),
+        };
+        let (object, current) = Object::deleted_object_pair(&resource, None, 5, 2, timestamp());
+        assert!(object.is_deleted);
+        assert!(current.is_deleted);
+        assert_eq!(object.owner_address, DELETED_RESOURCE_OWNER_ADDRESS);
+        assert_eq!(current.last_transaction_version, 5);
     }
 }

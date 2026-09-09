@@ -39,7 +39,11 @@ impl Processable for ParquetObjectsExtractor {
         transactions: TransactionContext<Self::Input>,
     ) -> anyhow::Result<Option<TransactionContext<ParquetTypeMap>>, ProcessorError> {
         let (raw_all_objects, raw_all_current_objects) =
-            process_objects(transactions.data, &mut None).await;
+            process_objects(transactions.data, &mut None)
+                .await
+                .map_err(|e| ProcessorError::ProcessError {
+                    message: format!("Error processing objects: {e:?}"),
+                })?;
         let parquet_objects: Vec<ParquetObject> = raw_all_objects
             .into_iter()
             .map(ParquetObject::from)
