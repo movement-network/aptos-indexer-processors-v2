@@ -29,6 +29,24 @@ const MULTI_ED25519_SCHEME: u8 = 1;
 const SINGLE_KEY_SCHEME: u8 = 2;
 const MULTI_KEY_SCHEME: u8 = 3;
 const MAX_ACCOUNT_PUBLIC_KEY_LENGTH: usize = 13000;
+const ED25519_PUBLIC_KEY_LENGTH: usize = 32;
+
+/// MultiEd25519 public keys serialize as `pk_1 || ... || pk_n || threshold`.
+/// Each `pk_i` is 32 bytes; the trailing threshold is 1 byte and must not be
+/// treated as another public key.
+fn parse_multi_ed25519_sub_public_keys(public_key: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if public_key.len() < ED25519_PUBLIC_KEY_LENGTH + 1
+        || (public_key.len() - 1) % ED25519_PUBLIC_KEY_LENGTH != 0
+    {
+        return None;
+    }
+    Some(
+        public_key[..public_key.len() - 1]
+            .chunks_exact(ED25519_PUBLIC_KEY_LENGTH)
+            .map(|chunk| chunk.to_vec())
+            .collect(),
+    )
+}
 
 #[derive(
     Clone,
@@ -166,15 +184,11 @@ impl PublicKeyAuthKeyHelper {
         match event.public_key_scheme {
             ED25519_SCHEME => None,
             MULTI_ED25519_SCHEME => {
-                let public_keys: Vec<Vec<u8>> = event
-                    .public_key
-                    .chunks(32)
-                    .map(|chunk| chunk.to_vec())
-                    .collect();
+                let public_keys = parse_multi_ed25519_sub_public_keys(&event.public_key)?;
                 let mut keys = vec![];
-                for (i, _key) in public_keys.iter().enumerate() {
+                for (i, key) in public_keys.iter().enumerate() {
                     keys.push(PublicKeyAuthKeyHelperInner {
-                        public_key: format!("0x{}", hex::encode(&public_keys[i])),
+                        public_key: format!("0x{}", hex::encode(key)),
                         public_key_type: "ed25519".to_string(),
                         is_public_key_used: verified_public_key_indices.contains(&i),
                     });
@@ -372,4 +386,70 @@ pub struct KeylessPublicKey {
 pub struct FederatedKeylessPublicKey {
     pub jwk_addr: [u8; 32],
     pub pk: KeylessPublicKey,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::processors::account_restoration::account_restoration_models::account_restoration_utils::KeyRotationToPublicKeyEvent;
+
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        hex::decode(s).unwrap()
+    }
+
+    #[test]
+    fn multi_ed25519_rotation_does_not_treat_threshold_byte_as_public_key() {
+        // Serialized MultiEd25519 PK is pk_1 || pk_2 || threshold (2-of-2).
+        let pk0 = hex_bytes("9b975ea61923c41f6ed7c1711193691b4685804a75071a83e9e5dcc9df2bdb86");
+        let pk1 = hex_bytes("d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737");
+        let mut public_key = Vec::new();
+        public_key.extend_from_slice(&pk0);
+        public_key.extend_from_slice(&pk1);
+        public_key.push(2);
+
+        let event = KeyRotationToPublicKeyEvent {
+            new_auth_key: vec![0; 32],
+            old_auth_key: vec![0; 32],
+            public_key,
+            public_key_scheme: MULTI_ED25519_SCHEME,
+            verified_public_key_bit_map: vec![0xC0, 0x00, 0x00, 0x00],
+        };
+
+        let helper = PublicKeyAuthKeyHelper::create_helper_from_key_rotation_event(&event, 1)
+            .expect("valid MultiEd25519 rotation must produce a helper");
+
+        assert_eq!(
+            helper.keys.len(),
+            2,
+            "threshold byte must not become a third public key"
+        );
+        assert_eq!(
+            helper.keys[0].public_key,
+            format!("0x{}", hex::encode(&pk0))
+        );
+        assert_eq!(
+            helper.keys[1].public_key,
+            format!("0x{}", hex::encode(&pk1))
+        );
+        assert!(helper.keys[0].is_public_key_used);
+        assert!(helper.keys[1].is_public_key_used);
+        assert_eq!(
+            helper.account_public_key,
+            format!("0x{}{}02", hex::encode(&pk0), hex::encode(&pk1))
+        );
+    }
+
+    #[test]
+    fn multi_ed25519_rotation_rejects_payload_without_threshold_byte() {
+        let pk0 = hex_bytes("9b975ea61923c41f6ed7c1711193691b4685804a75071a83e9e5dcc9df2bdb86");
+        let event = KeyRotationToPublicKeyEvent {
+            new_auth_key: vec![0; 32],
+            old_auth_key: vec![0; 32],
+            public_key: pk0,
+            public_key_scheme: MULTI_ED25519_SCHEME,
+            verified_public_key_bit_map: vec![0x80, 0x00, 0x00, 0x00],
+        };
+
+        assert!(PublicKeyAuthKeyHelper::create_helper_from_key_rotation_event(&event, 1).is_none());
+    }
 }
