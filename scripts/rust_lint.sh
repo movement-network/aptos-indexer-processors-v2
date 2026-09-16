@@ -23,13 +23,18 @@ if [ "$1" = "--check" ]; then
 fi
 
 set -e
+
+# Pinned: `cargo +nightly` tracks whatever nightly exists today, so an upstream
+# rustc change turns CI red on an unrelated commit.
+NIGHTLY=$(cat rust-nightly-toolchain)
+
 set -x
 
-cargo +nightly xclippy
+cargo "+$NIGHTLY" xclippy
 
 # We require the nightly build of cargo fmt
 # to provide stricter rust formatting.
-cargo +nightly fmt $CHECK_ARG
+cargo "+$NIGHTLY" fmt $CHECK_ARG
 
 # Once cargo-sort correctly handles workspace dependencies,
 # we can move to cleaner workspace dependency notation.
