@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.85.0"
+channel = "1.93.1"  # aptos-indexer-processor-sdk v2.4.1 requires rust-version 1.93.1
 
 # Note: we don't specify cargofmt in our toolchain because we rely on
 # the nightly version of cargofmt and verify formatting in CI/CD.

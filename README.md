@@ -55,7 +55,8 @@ If you want to index a custom contract, we recommend using the [Quickstart Guide
     - `additional_headers`: addtional headers to append to the grpc request
     - `indexer_grpc_http2_ping_interval_in_secs`: client-side grpc HTTP2 ping interval.
     - `indexer_grpc_http2_ping_timeout_in_secs`: client-side grpc HTTP2 ping timeout.
-    - `indexer_grpc_reconnection_timeout_secs`: grpc reconnection timeout
+    - `reconnection_config`: gRPC reconnection settings (replaces `indexer_grpc_reconnection_timeout_secs` / `indexer_grpc_reconnection_max_retries`)
+    - `backup_endpoints`: optional backup gRPC endpoints for failover
     - `indexer_grpc_response_item_timeout_secs`: grpc response item timeout
    
 - `db_config`

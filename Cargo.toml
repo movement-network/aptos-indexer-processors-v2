@@ -26,7 +26,7 @@ anyhow = "1.0.98"
 # https://github.com/aptos-labs/aptos-indexer-processors/pull/325
 # Do NOT enable the testing_framework feature here, it is conditionally enabled as a dev dependency
 # in the integration-tests/Cargo.toml file.
-aptos-indexer-processor-sdk = { git = "https://github.com/aptos-labs/aptos-indexer-processor-sdk.git", tag = "aptos-indexer-processor-sdk-v2.1.2", features = [
+aptos-indexer-processor-sdk = { git = "https://github.com/aptos-labs/aptos-indexer-processor-sdk.git", tag = "aptos-indexer-processor-sdk-v2.4.1", features = [
     "postgres_partial",
 ] }
 aptos-indexer-test-transactions = { git = "https://github.com/aptos-labs/aptos-core.git", rev = "150d0bdc63e9fda298edef7244bb044b1efa6e17" }
@@ -45,21 +45,19 @@ const_format = "0.2.33"
 # Do NOT enable the postgres feature here, it is conditionally enabled in a feature
 # block in the Cargo.toml file for the processor crate.
 # https://github.com/aptos-labs/aptos-indexer-processors/pull/325
-diesel = { version = "=2.2.0", features = [
+diesel = { version = "~2.3", features = [
     "chrono",
     "postgres_backend",
     "numeric",
     "serde_json",
 ] }
-# Use the crate version once this feature gets released on crates.io:
-# https://github.com/weiznich/diesel_async/commit/e165e8c96a6c540ebde2d6d7c52df5c5620a4bf1
-diesel-async = { git = "https://github.com/weiznich/diesel_async.git", rev = "e3beac66cd41ab53d78a10328bb72f272103e5d1", features = [
+# Same diesel / diesel-async versions as aptos-indexer-processor-sdk v2.4.1 (a second diesel-async would not type-check).
+diesel-async = { version = "0.7.4", features = [
     "async-connection-wrapper",
     "postgres",
     "bb8",
     "tokio",
 ] }
-diesel_async_migrations = { git = "https://github.com/weiznich/diesel_async.git", rev = "e3beac66cd41ab53d78a10328bb72f272103e5d1" }
 diesel_migrations = { version = "2.1.0", features = ["postgres"] }
 dirs = "5.0.1"
 downcast-rs = "1.2.1"
